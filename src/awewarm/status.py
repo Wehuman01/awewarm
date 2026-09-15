@@ -83,6 +83,11 @@ def _status_block(conn_id, conn, state, now, detailed, where=None):
         attempted = schedule.parse_ts(cs.get("lastAttemptAt"))
         detail = cs.get("lastError") or "unknown error"
         click.echo(f"  Last result: failure ({cli._fmt_moment(attempted, now)}) — {detail}")
+    pin = schedule.parse_ts(cs.get("nextOverrideAt"))
+    if pin is not None:
+        slot = cs.get("nextOverrideSlot")
+        moved = f" slot {slot}" if slot else ""
+        click.echo(f"  Pinned: {cli._fmt_moment(pin, now)}{moved} (one-shot; clears on success)")
     if not enabled:
         click.echo("  Next due: none (disabled)")
         return

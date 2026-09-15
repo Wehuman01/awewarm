@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from helpers import account_connection, plan_connection, start_http_server, stop_http_server
 
 from awewarm import remote as remote_client
-from awewarm import server, transport
+from awewarm import schedule, server, transport
 
 TZ = "Asia/Shanghai"
 
@@ -246,6 +246,62 @@ class ConnectionTests(ServerCase):
         self.push_plan()
         self.assertEqual(self.view()["connections"]["glm"]["state"]["history"], [])
         self.assertIsNotNone(self.view()["connections"]["glm"]["state"])
+
+    def test_override_pins_next_fire_without_resetting_state(self):
+        self.push_plan()
+        now = datetime.now(ZoneInfo(TZ))
+        pin = now.replace(second=0, microsecond=0) + timedelta(hours=2)
+        last_ok = now - timedelta(hours=1)
+        self.warm.state["connections"]["glm"]["lastActivationAt"] = schedule.iso(last_ok)
+        self.warm.state["connections"]["glm"]["completedSlots"] = {
+            now.strftime("%Y-%m-%d"): ["03:00"]
+        }
+        self.warm._save(self.warm.state_path, self.warm.state)
+        result = remote_client.set_next_override(
+            self.url, self.token, "glm", schedule.iso(pin)
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(schedule.parse_ts(result["nextDue"]), pin)
+        self.assertEqual(result["nextDueKind"], "override")
+        entry = self.view()["connections"]["glm"]["state"]
+        self.assertEqual(schedule.parse_ts(entry["lastActivationAt"]), last_ok)
+        self.assertEqual(entry["completedSlots"], {now.strftime("%Y-%m-%d"): ["03:00"]})
+        self.assertEqual(schedule.parse_ts(entry["nextOverrideAt"]), pin)
+
+    def test_override_clear_returns_to_slot_schedule(self):
+        self.push_plan(fixed_at=("16:00",))
+        now = datetime.now(ZoneInfo(TZ))
+        pin = now.replace(second=0, microsecond=0) + timedelta(minutes=30)
+        remote_client.set_next_override(self.url, self.token, "glm", schedule.iso(pin), "16:00")
+        entry = self.view()["connections"]["glm"]["state"]
+        self.assertEqual(entry.get("nextOverrideSlot"), "16:00")
+        result = remote_client.set_next_override(self.url, self.token, "glm", None)
+        self.assertTrue(result["ok"])
+        self.assertIsNone(result["nextOverrideAt"])
+        self.assertIsNone(result["nextOverrideSlot"])
+        # Back on the fixed grid: next 16:00 (today if still ahead, else tomorrow).
+        due = schedule.parse_ts(result["nextDue"])
+        self.assertEqual(due.strftime("%H:%M"), "16:00")
+        self.assertEqual(result["nextDueKind"], "fixed")
+
+    def test_override_rejects_bad_slot(self):
+        self.push_plan()
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.set_next_override(
+                self.url, self.token, "glm", schedule.iso(at("14:38")), "25:00"
+            )
+        self.assertIn("HH:MM", str(ctx.exception))
+
+    def test_override_rejects_bad_timestamp(self):
+        self.push_plan()
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.set_next_override(self.url, self.token, "glm", "14:38")
+        self.assertIn("ISO timestamp", str(ctx.exception))
+
+    def test_override_unknown_connection_404(self):
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.set_next_override(self.url, self.token, "missing", None)
+        self.assertIn("404", str(ctx.exception))
 
     def test_delete_removes_connection(self):
         self.push_plan()

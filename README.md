@@ -164,7 +164,7 @@ One request at each fixed local time (`weekday` or `every-day`); each hit opens 
 
 - If the machine was asleep at the slot time, the slot still fires late within the catch-up window (default 30 min); past that it is recorded as skipped.
 - A slot landing within 30 min of a previous success is skipped — never pay for two windows at once.
-- `--start HH:MM` is a one-time gate that shifts today's schedule: no slot fires before that moment, and a held slot fires right after the gate lifts while still inside its catch-up window (`--start 16:05` turns today's 16:00 slot into 16:05) — the times list itself is untouched. A gate past a slot's catch-up end skips that slot; the gate clears on the first success.
+- `--start HH:MM` is a one-shot **slot move**: it names the next pending fixed slot and fires *that* slot at the new moment (today, or tomorrow if the time has passed) — the times list itself is untouched, and the original slot is marked completed. Implemented as a special case of `--next` (same state pin). Works on delegated connections too.
 - The only mode that works while window semantics are unknown, which is why unverified plans start here.
 - During setup, when the window duration is known, awewarm asks for the plan's daily quota reset time and offers a full-day grid anchored on it — one slot per window, spaced window + 5 min apart (e.g. reset 01:14 + a 5 h window → 01:14, 06:19, 11:24, 16:29, 21:34). Declining keeps just the time you entered. Plans added in fixed mode are asked for the window duration first (default 300) — it spaces the grid and is recorded as a user-confirmed window that unlocks interval mode.
 
@@ -177,7 +177,7 @@ awewarm config set claude-code --mode fixed
 
 ### `interval` — rolling renewal
 
-After each success the next request is scheduled `window + grace` later (default 300 min + 75 s, plus up to 30 s jitter). The grace runs *after* the old window has closed — firing earlier would land inside the old window and start nothing. With no success recorded yet, one request fires immediately as the first anchor — unless you defer that start with `--start HH:MM`: no request fires before that moment (today, or tomorrow if it has passed), the first tick after it opens the chain, and the gate clears on the first success. The same gate also works in fixed mode (see above).
+After each success the next request is scheduled `window + grace` later (default 300 min + 75 s, plus up to 30 s jitter). The grace runs *after* the old window has closed — firing earlier would land inside the old window and start nothing. With no success recorded yet, one request fires immediately as the first anchor — unless you move that start with `--start HH:MM`: the pin fires once at that moment (today, or tomorrow if it has passed), and the chain continues from that success. The same pin also works in fixed mode (see above).
 
 ```bash
 awewarm run my-plan                        # 1. one minimal request, timestamped
@@ -189,6 +189,21 @@ awewarm config set my-plan --mode interval # 3. rolling renewal
 A manual `run <id>` never shifts the renewal chain — the next due moment stays as scheduled. Add `--reset-due` to restart the chain from this run instead.
 
 **Example** — an always-on machine you want warm around the clock, nights and weekends included: no wake machinery needed, renewal just keeps rolling.
+
+### Temporarily move the next fire
+
+One state pin (`nextOverrideAt`, optional `nextOverrideSlot`) backs both knobs. Setting one clears the other; the first success clears the pin. Both work on delegated connections (`POST /v1/connections/<id>/override` — state only, never a connection re-push).
+
+- `--start HH:MM` — **move the original next slot / activation** to this time. Fixed: names the next pending slot and fires *that slot* at T (slot identity preserved; times list untouched). Interval: fires once at T, then the chain continues from that success.
+- `--next HH:MM` — a **plain pin**: fire *once* at that moment (as `override`, not as a named slot), then resume the normal schedule. Can be earlier or later than the next slot.
+- `--clear-next` — drop the pin.
+
+```bash
+awewarm config set glm-remote --start 16:05   # today's 16:00 slot fires at 16:05
+awewarm config set glm-remote --next 14:38    # one-shot warm at 14:38; 16:00 still later
+awewarm config set glm-remote --clear-next    # drop the pin
+awewarm status glm-remote                     # shows "Pinned: …" while armed
+```
 
 ### Quick Templates
 

@@ -83,6 +83,24 @@ def _next_occurrence(hhmm, now):
     return schedule.slot_datetime(now.date() + timedelta(days=1), hhmm, now.tzinfo)
 
 
+def _pending_slot_for(config, state, conn_id, conn, now):
+    """The original fixed slot `--start` should move, from live state.
+
+    Delegated connections read the server's slot bookkeeping (the owner of
+    their state); local ones read the on-disk state under the caller's lock.
+    """
+    if conn.get("location") == "remote":
+        try:
+            view = remote.ensure_session(config)
+        except remote.RemoteError as exc:
+            die(f"cannot read {conn_id} state from the server:\n{exc}")
+        entry = (view.get("connections") or {}).get(conn_id) or {}
+        cs = entry.get("state") or {}
+    else:
+        cs = conn_state(state, conn_id)
+    return schedule.next_pending_slot(conn, cs, now)
+
+
 def _find_connection(config, conn_id):
     if conn_id in config["connections"]:
         return conn_id, config["connections"][conn_id]
@@ -769,6 +787,7 @@ class _SetOptions:
 
     FIELDS = (
         "times", "days", "mode", "enabled", "hide", "anchor_hhmm", "start_hhmm",
+        "next_hhmm", "clear_next",
         "window_minutes", "api_key", "wake", "catchup_minutes",
         "catchup_attempts", "degrade_after_nodes", "location",
         "inherit_schedule", "duplicate", "persist_key",
@@ -814,9 +833,16 @@ def _config_set(connection, opts):
     if conn.get("location") == "remote" and opts.anchor_hhmm is not None:
         die(f"{conn_id} is delegated — its state lives on the server\n"
             f"  fix: take it back first: awewarm config set {conn_id} --local")
-    if conn.get("location") == "remote" and opts.start_hhmm is not None:
-        die(f"{conn_id} is delegated — its state lives on the server\n"
-            f"  fix: take it back first: awewarm config set {conn_id} --local")
+    if opts.next_hhmm is not None and opts.clear_next:
+        die("use either --next HH:MM or --clear-next, not both")
+    if opts.start_hhmm is not None and opts.next_hhmm is not None:
+        die("use either --start HH:MM or --next HH:MM, not both")
+    if opts.start_hhmm is not None and opts.clear_next:
+        die("use either --start HH:MM or --clear-next, not both")
+    if opts.next_hhmm is not None and not SLOT_RE.match(opts.next_hhmm):
+        die("use HH:MM, e.g. 14:38")
+    if opts.start_hhmm is not None and not SLOT_RE.match(opts.start_hhmm):
+        die("use HH:MM, e.g. 08:00")
     if opts.api_key is not None:
         if not opts.api_key.strip() or "\n" in opts.api_key:
             die("--api-key must be a single non-empty line")
@@ -912,14 +938,40 @@ def _config_set(connection, opts):
             die("that time already passed today — enter a later time today")
         schedule.apply_user_anchor(conn_state(state, conn_id), conn, reset_at)
         state_changed = True
-    if opts.start_hhmm is not None:
-        if not SLOT_RE.match(opts.start_hhmm):
-            die("use HH:MM, e.g. 08:00")
-        start_now = _now(config)
-        conn_state(state, conn_id)["deferUntil"] = schedule.iso(
-            _next_occurrence(opts.start_hhmm, start_now)
-        )
-        state_changed = True
+    pin_now = None
+    next_override_at = None
+    next_override_slot = None
+    if opts.start_hhmm is not None or opts.next_hhmm is not None or opts.clear_next:
+        pin_now = _now(config)
+        if opts.clear_next:
+            next_override_at = None
+            next_override_slot = None
+        else:
+            hhmm = opts.start_hhmm if opts.start_hhmm is not None else opts.next_hhmm
+            next_override_at = schedule.iso(_next_occurrence(hhmm, pin_now))
+            # --start on fixed moves the original slot; --next is a plain pin.
+            if opts.start_hhmm is not None and conn["schedule"]["mode"] == "fixed":
+                next_override_slot = _pending_slot_for(config, state, conn_id, conn, pin_now)
+                if next_override_slot is None:
+                    die(
+                        f"{conn_id}: no pending fixed slot to move\n"
+                        f"  fix: check: awewarm status {conn_id}"
+                    )
+        if conn.get("location") == "remote":
+            # State-only pin on the server — never a connection re-push
+            # (that would wipe last activation and completed slots).
+            try:
+                remote.set_next_override(
+                    remote.remote_url(config), remote.load_token(),
+                    conn_id, next_override_at, next_override_slot,
+                )
+            except remote.RemoteError as exc:
+                die(f"failed to set next override on the server:\n{exc}")
+        else:
+            cs = conn_state(state, conn_id)
+            cs["nextOverrideAt"] = next_override_at
+            cs["nextOverrideSlot"] = next_override_slot
+            state_changed = True
 
     if opts.location is not None:
         if opts.location:
@@ -957,9 +1009,25 @@ def _config_set(connection, opts):
         next_due = schedule.parse_ts(conn_state(state, conn_id)["nextDueAt"])
         click.echo(f"✓ {conn_id} anchored — next request at {_fmt_moment(next_due, anchor_now)} (interval)")
     if opts.start_hhmm is not None:
-        defer = schedule.parse_ts(conn_state(state, conn_id)["deferUntil"])
-        scope = "interval activation" if conn["schedule"]["mode"] == "interval" else "fixed slots"
-        click.echo(f"✓ {conn_id} deferred until {_fmt_moment(defer, start_now)} — no {scope} fire before then (clears on first success)")
+        moment = schedule.parse_ts(next_override_at)
+        if next_override_slot:
+            click.echo(
+                f"✓ {conn_id} slot {next_override_slot} moved to {_fmt_moment(moment, pin_now)} "
+                f"(one-shot; clears on success; times list untouched)"
+            )
+        else:
+            click.echo(
+                f"✓ {conn_id} deferred until {_fmt_moment(moment, pin_now)} "
+                f"(one-shot; clears on success)"
+            )
+    if opts.next_hhmm is not None:
+        moment = schedule.parse_ts(next_override_at)
+        click.echo(
+            f"✓ {conn_id} pinned — next fire at {_fmt_moment(moment, pin_now)} "
+            f"(one-shot; clears on success; times/chain untouched)"
+        )
+    if opts.clear_next:
+        click.echo(f"✓ {conn_id} pin cleared — normal schedule resumes")
     if opts.window_minutes is not None:
         click.echo(f"✓ Window recorded as {opts.window_minutes} minutes, user-confirmed.")
         if window_notice:
@@ -989,7 +1057,7 @@ def _config_set(connection, opts):
         ))
     ):
         _push_edits_to_remote(config, state, conn_id)
-    if any(value is not None for value in (opts.times, opts.days, opts.mode, opts.enabled, opts.wake, opts.start_hhmm, opts.inherit_schedule)):
+    if any(value is not None for value in (opts.times, opts.days, opts.mode, opts.enabled, opts.wake, opts.start_hhmm, opts.next_hhmm, opts.clear_next, opts.inherit_schedule)):
         _refresh_wake_after_edit()
 
 
@@ -1020,7 +1088,9 @@ def _push_edits_to_remote(config, state, conn_id):
 @click.option("--on/--off", "enabled", default=None, help="Enable or disable the connection (--on also resets failure counters).")
 @click.option("--hide/--show", "hide", default=None, help="Hide this connection from status listings (its warm-ups continue).")
 @click.option("--anchor", "anchor_hhmm", default=None, metavar="HH:MM", help="Anchor renewal to a window open now (its close time today).")
-@click.option("--start", "start_hhmm", default=None, metavar="HH:MM", help="Defer activation until this time — today, or tomorrow if passed (fixed and interval).")
+@click.option("--start", "start_hhmm", default=None, metavar="HH:MM", help="One-shot: move the next fixed slot (or interval activation) to this time — today, or tomorrow if passed. Special case of --next.")
+@click.option("--next", "next_hhmm", default=None, metavar="HH:MM", help="One-shot pin: fire once at this time (today, or tomorrow if passed), then resume the normal schedule. Works on delegated connections.")
+@click.option("--clear-next", "clear_next", is_flag=True, default=None, help="Clear a --start/--next pin so the normal schedule resumes.")
 @click.option("--window", "window_minutes", type=int, default=None, metavar="MINUTES", help="Record the window duration you verified (unlocks interval).")
 @click.option("--api-key", "api_key", default=None, help="Store a new API key in awewarm's secrets file.")
 @click.option("--wake/--no-wake", "wake", default=None, help="Let fixed slots wake a sleeping machine (macOS/Windows).")
@@ -1033,7 +1103,8 @@ def _push_edits_to_remote(config, state, conn_id):
 @click.option("--persist-key", "persist_key", type=click.Choice(["on", "off"]), default=None,
               help="Also store this connection's API key on the server's disk, surviving its restarts (asks to confirm; off is the default and recommended).")
 @click.option("--yes", "assume_yes", is_flag=True, default=False, help="Skip the persist-key confirmation prompts (for non-interactive shells).")
-def config_set(connection, times, days, mode, enabled, hide, anchor_hhmm, start_hhmm, window_minutes, api_key, wake,
+def config_set(connection, times, days, mode, enabled, hide, anchor_hhmm, start_hhmm,
+               next_hhmm, clear_next, window_minutes, api_key, wake,
                catchup_minutes, catchup_attempts, degrade_after_nodes, location, inherit_schedule, duplicate,
                persist_key, assume_yes):
     """Show or change one connection's settings.
@@ -1041,7 +1112,7 @@ def config_set(connection, times, days, mode, enabled, hide, anchor_hhmm, start_
     With no flags, prints the current settings."""
     options = _SetOptions(
         times=times, days=days, mode=mode, enabled=enabled, hide=hide, anchor_hhmm=anchor_hhmm,
-        start_hhmm=start_hhmm, window_minutes=window_minutes, api_key=api_key, wake=wake,
+        start_hhmm=start_hhmm, next_hhmm=next_hhmm, clear_next=clear_next, window_minutes=window_minutes, api_key=api_key, wake=wake,
         catchup_minutes=catchup_minutes, catchup_attempts=catchup_attempts,
         degrade_after_nodes=degrade_after_nodes, location=location, inherit_schedule=inherit_schedule,
         duplicate=duplicate or None,  # is_flag defaults to False; _SetOptions speaks None

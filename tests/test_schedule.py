@@ -126,34 +126,99 @@ class FixedTests(unittest.TestCase):
 
     def test_start_gate_holds_slot_then_fires_within_catchup(self):
         conn_state = default_conn_state()
-        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "07:00"))
         conn = account_connection()  # slot 06:35
+        slot = schedule.next_pending_slot(conn, conn_state, at(WEDNESDAY, "06:00"))
+        self.assertEqual(slot, "06:35")
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "07:00"))
+        conn_state["nextOverrideSlot"] = slot
         self.assertEqual(schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "06:36")), [])
         actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "07:00"))
         self.assertEqual(actions[0]["type"], "activate")
+        self.assertEqual(actions[0]["reason"], "fixed")
+        self.assertEqual(actions[0]["slot"], "06:35")
+        self.assertEqual(actions[0]["slotAt"], at(WEDNESDAY, "07:00"))
+
+    def test_start_moves_slot_even_past_catchup(self):
+        # --start names the pending slot; the pin fires it at T regardless of
+        # the old catch-up ceiling (that ceiling only applied to ungated slots).
+        conn_state = default_conn_state()
+        conn = account_connection()
+        slot = schedule.next_pending_slot(conn, conn_state, at(WEDNESDAY, "06:00"))
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        conn_state["nextOverrideSlot"] = slot
+        actions = self.plan(conn_state, at(WEDNESDAY, "09:00"))
+        self.assertEqual(actions[0]["reason"], "fixed")
         self.assertEqual(actions[0]["slot"], "06:35")
 
-    def test_start_gate_beyond_catchup_skips_slot_after_lift(self):
+    def test_start_pin_clears_on_fixed_success(self):
         conn_state = default_conn_state()
-        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
-        actions = self.plan(conn_state, at(WEDNESDAY, "09:00"))  # 06:35 is 145 min past
-        self.assertEqual(
-            actions,
-            [{"type": "skip-slot", "slot": "06:35", "why": "past-catchup"}],
-        )
-
-    def test_start_gate_clears_on_fixed_success(self):
-        conn_state = default_conn_state()
-        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "07:00"))
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "07:00"))
+        conn_state["nextOverrideSlot"] = "06:35"
         schedule.record_success(conn_state, account_connection(), at(WEDNESDAY, "07:00"), "fixed", slot="06:35")
-        self.assertIsNone(conn_state.get("deferUntil"))
+        self.assertIsNone(conn_state.get("nextOverrideAt"))
+        self.assertIsNone(conn_state.get("nextOverrideSlot"))
+        self.assertIn("06:35", conn_state["completedSlots"][WEDNESDAY.strftime("%Y-%m-%d")])
 
-    def test_next_due_fixed_capped_by_gate(self):
+    def test_next_due_fixed_capped_by_pin(self):
         conn_state = default_conn_state()
-        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "07:00"))
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "07:00"))
+        conn_state["nextOverrideSlot"] = "06:35"
         moment, kind = schedule.next_due(account_connection(), conn_state, at(WEDNESDAY, "06:00"))
         self.assertEqual(moment, at(WEDNESDAY, "07:00"))
-        self.assertEqual(kind, "fixed (deferred)")
+        self.assertEqual(kind, "fixed (moved)")
+
+    def test_migrate_defers_until_into_pin(self):
+        conn_state = default_conn_state()
+        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "07:00"))
+        schedule.migrate_state(conn_state)
+        self.assertNotIn("deferUntil", conn_state)
+        self.assertEqual(schedule.parse_ts(conn_state["nextOverrideAt"]), at(WEDNESDAY, "07:00"))
+        self.assertIsNone(conn_state.get("nextOverrideSlot"))
+
+    def test_next_override_holds_until_its_moment(self):
+        conn_state = default_conn_state()
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "14:38"))
+        # Regular 06:35 slot would be due; the pin holds it.
+        self.assertEqual(self.plan(conn_state, at(WEDNESDAY, "07:00")), [])
+        actions = self.plan(conn_state, at(WEDNESDAY, "14:38"))
+        self.assertEqual(
+            actions,
+            [{"type": "activate", "reason": "override", "dueAt": at(WEDNESDAY, "14:38")}],
+        )
+
+    def test_next_override_clears_on_success_and_slot_resumes(self):
+        conn = account_connection(fixed_at=("16:45",), days="every-day")
+        conn_state = default_conn_state()
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "14:38"))
+        schedule.record_success(conn_state, conn, at(WEDNESDAY, "14:38"), "override")
+        self.assertIsNone(conn_state.get("nextOverrideAt"))
+        actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "16:45"))
+        self.assertEqual(actions[0]["reason"], "fixed")
+        self.assertEqual(actions[0]["slot"], "16:45")
+
+    def test_next_override_replaces_defer_gate(self):
+        conn_state = default_conn_state()
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "14:38"))
+        moment, kind = schedule.next_due(account_connection(), conn_state, at(WEDNESDAY, "12:00"))
+        self.assertEqual(moment, at(WEDNESDAY, "14:38"))
+        self.assertEqual(kind, "override")
+
+    def test_next_override_past_moment_is_due_now(self):
+        conn_state = default_conn_state()
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "14:38"))
+        moment, kind = schedule.next_due(account_connection(), conn_state, at(WEDNESDAY, "15:00"))
+        self.assertEqual(moment, at(WEDNESDAY, "15:00"))
+        self.assertEqual(kind, "override")
+
+    def test_next_override_throttles_after_failure(self):
+        conn = account_connection()
+        conn_state = default_conn_state()
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "14:38"))
+        schedule.record_attempt(conn_state, at(WEDNESDAY, "14:38"))
+        conn_state["lastResult"] = "failure"
+        self.assertEqual(self.plan(conn_state, at(WEDNESDAY, "14:40")), [])
+        actions = self.plan(conn_state, at(WEDNESDAY, "14:44"))
+        self.assertEqual(actions[0]["reason"], "override")
 
 
 class IntervalTests(unittest.TestCase):
@@ -188,45 +253,45 @@ class IntervalTests(unittest.TestCase):
 
     def test_start_gate_blocks_first_anchor(self):
         conn_state = default_conn_state()
-        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "09:00"))
         self.assertEqual(schedule.plan_actions(self.interval_conn(), conn_state, at(WEDNESDAY, "08:59")), [])
 
     def test_start_gate_blocks_due_chain(self):
         conn_state = default_conn_state()
         conn = self.interval_conn()
         schedule.record_success(conn_state, conn, at(WEDNESDAY, "02:00"), "interval")
-        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))  # set after: success clears it
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "09:00"))  # set after: success clears it
         self.assertEqual(schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "08:00")), [])
         actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "09:30"))
-        self.assertEqual(actions[0]["reason"], "interval")
+        self.assertEqual(actions[0]["reason"], "override")
 
     def test_start_gate_clears_on_success(self):
         conn_state = default_conn_state()
-        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "09:00"))
         schedule.record_success(conn_state, self.interval_conn(), at(WEDNESDAY, "09:01"), "first-anchor")
-        self.assertIsNone(conn_state.get("deferUntil"))
+        self.assertIsNone(conn_state.get("nextOverrideAt"))
 
     def test_user_anchor_clears_start_gate(self):
         conn_state = default_conn_state()
-        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "09:00"))
         schedule.apply_user_anchor(conn_state, self.interval_conn(), at(WEDNESDAY, "13:27"))
-        self.assertIsNone(conn_state.get("deferUntil"))
+        self.assertIsNone(conn_state.get("nextOverrideAt"))
 
-    def test_next_due_shows_deferred_first_anchor(self):
+    def test_next_due_shows_pinned_first_anchor(self):
         conn_state = default_conn_state()
-        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "09:00"))
         moment, kind = schedule.next_due(self.interval_conn(), conn_state, at(WEDNESDAY, "08:00"))
         self.assertEqual(moment, at(WEDNESDAY, "09:00"))
-        self.assertIn("first anchor", kind)
+        self.assertEqual(kind, "override")
 
-    def test_next_due_chain_capped_by_gate(self):
+    def test_next_due_chain_capped_by_pin(self):
         conn_state = default_conn_state()
         conn = self.interval_conn()
         schedule.record_success(conn_state, conn, at(WEDNESDAY, "02:00"), "interval")
-        conn_state["deferUntil"] = schedule.iso(at(WEDNESDAY, "09:00"))
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "09:00"))
         moment, kind = schedule.next_due(conn, conn_state, at(WEDNESDAY, "08:00"))
         self.assertEqual(moment, at(WEDNESDAY, "09:00"))
-        self.assertEqual(kind, "interval")
+        self.assertEqual(kind, "override")
 
     def test_compute_next_due_formula(self):
         conn = self.interval_conn()

@@ -474,6 +474,12 @@ def wake_specs(config, state, now):
             continue
         if connection_errors(conn, conn_id):
             continue
+        cs = conn_state(state, conn_id)
+        # A one-shot pin is a real due moment — arm a wake for it even when
+        # the mode's own slots would not cover that instant.
+        override = schedule.parse_ts(cs.get("nextOverrideAt"))
+        if override is not None:
+            moments.add((override, "override"))
         if sched.get("mode") == "fixed":
             at_times = (sched.get("fixed") or {}).get("at") or []
             for offset in range(2):

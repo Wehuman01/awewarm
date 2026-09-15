@@ -145,13 +145,19 @@ awewarm config set <id> --anchor HH:MM
 
 Tells awewarm when the current window closes; renewal starts right after it instead of firing inside it. No request is sent.
 
-### Defer the next fire (both modes)
+### Move the next fire (both modes)
 
 ```bash
-awewarm config set <id> --start HH:MM
+awewarm config set <id> --start HH:MM     # move the original next slot/activation to this time
+awewarm config set <id> --next HH:MM      # plain one-shot pin (no slot identity)
+awewarm config set <id> --clear-next      # drop either pin
 ```
 
-One-time gate: no request fires before that moment (today, or tomorrow if it has passed). In interval mode it covers the first anchor and any stale chain due; in fixed mode a held slot fires right after the gate lifts while still inside its catch-up window — `--start 16:05` turns today's 16:00 slot into 16:05 without touching the times list (a gate past a slot's catch-up end skips that slot). The gate clears on the first success (`--anchor` clears it too).
+One state pin backs both verbs; setting one clears the other; first success clears it. Both work on delegated connections (state-only API).
+
+- `--start` on fixed names the next pending slot and fires *that slot* at T (times list untouched; slot marked completed). On interval it fires once at T, then the chain continues from that success.
+- `--next` fires once at T as `override` — can be earlier or later than the next slot.
+- `status` shows `Pinned: …` while armed.
 
 ### Enable RTC wake for lid-closed sleep
 

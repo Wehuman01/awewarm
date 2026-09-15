@@ -50,6 +50,7 @@ Wire protocol (JSON over HTTP, Bearer token):
   PUT    /v1/keys                    {id: key, ...} → re-key after a restart
   GET    /v1/state                   server truth for `awewarm status`
   POST   /v1/connections/<id>/run    fire one now (manual semantics)
+  POST   /v1/connections/<id>/override  pin/clear one-shot next fire (state only)
 
 Semi-public extension surface: WarmServer, ApiError, _Handler (its overridable
 seams), and the config/locking helpers they use are relied on by awewarm-hub,
@@ -70,7 +71,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
 
 from . import __version__, net, schedule, transport
-from .config import append_log, conn_state, connection_errors, default_conn_state, timezone_for, _write_json
+from .config import SLOT_RE, append_log, conn_state, connection_errors, default_conn_state, timezone_for, _write_json
 
 TOKEN_RE = re.compile(r"^awt_[A-Za-z0-9_-]{20,128}$")
 BODY_LIMIT_BYTES = 256 * 1024
@@ -486,6 +487,50 @@ class WarmServer:
         )
         return result
 
+    def set_next_override(self, conn_id, at, slot=None):
+        """Pin or clear the one-shot next fire; never touches connection config.
+
+        Unlike put_connection this leaves schedule memory (last activation,
+        completed slots, health ladder) intact — the temporary pin is state,
+        not a schedule rewrite. `slot` (HH:MM) marks the pin as a moved fixed
+        slot (`--start`); omit for a plain pin (`--next`).
+        """
+        with self.lock:
+            conn = self.config["connections"].get(conn_id)
+            if conn is None:
+                raise ApiError(404, f"no such connection: {conn_id}")
+            if slot is not None and not isinstance(slot, str):
+                raise ApiError(400, "nextOverrideSlot must be an HH:MM string or null")
+            if isinstance(slot, str) and not SLOT_RE.match(slot):
+                raise ApiError(400, "nextOverrideSlot must be HH:MM, e.g. 16:00")
+            cs = conn_state(self.state, conn_id)
+            if at is None:
+                cs["nextOverrideAt"] = None
+                cs["nextOverrideSlot"] = None
+            else:
+                moment = schedule.parse_ts(at)
+                if moment is None:
+                    raise ApiError(
+                        400,
+                        "nextOverrideAt must be an ISO timestamp with timezone, or null",
+                    )
+                cs["nextOverrideAt"] = schedule.iso(moment)
+                cs["nextOverrideSlot"] = slot
+            self._save(self.state_path, self.state)
+            due_at, kind = schedule.next_due(conn, cs, self._now(conn))
+            self.log(
+                f"{conn_id} next-override "
+                + ("cleared" if at is None else f"set to {cs['nextOverrideAt']}")
+                + (f" (slot {slot})" if slot else "")
+            )
+            return {
+                "ok": True,
+                "nextOverrideAt": cs.get("nextOverrideAt"),
+                "nextOverrideSlot": cs.get("nextOverrideSlot"),
+                "nextDue": schedule.iso(due_at) if due_at else None,
+                "nextDueKind": kind,
+            }
+
     # --- the tick ---
 
     def _now(self, conn):
@@ -648,6 +693,11 @@ class _Handler(BaseHTTPRequestHandler):
     def _run_now(self, warm, tenant, conn_id, body):
         return warm.run_now(conn_id, bool(body.get("resetDue")), bool(body.get("allowAutoDisabled")))
 
+    def _set_override(self, warm, tenant, conn_id, body):
+        return warm.set_next_override(
+            conn_id, body.get("nextOverrideAt"), body.get("nextOverrideSlot")
+        )
+
     # --- plumbing ---
 
     def log_message(self, fmt, *args):
@@ -734,6 +784,8 @@ class _Handler(BaseHTTPRequestHandler):
                 verb = parts[3] if len(parts) == 4 else None
                 if verb == "run" and method == "POST":
                     return self._send(200, self._run_now(warm, tenant, conn_id, self._body()))
+                if verb == "override" and method == "POST":
+                    return self._send(200, self._set_override(warm, tenant, conn_id, self._body()))
                 if verb is not None:
                     raise ApiError(404, f"no such endpoint: {path}")
                 if method == "PUT":

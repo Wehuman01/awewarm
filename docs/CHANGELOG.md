@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.6.9
+
+**One-shot pins for the next fire: `--next` (plain pin) and `--start` (move the original slot), local and delegated.** Temporary next-due edits used to mean either a local-only `--start` gate (`deferUntil`, delay-only, refused for remote) or permanently rewriting `--times` — a full connection re-push that also wiped last activation and completed slots on the server. Both verbs now share one state pin (`nextOverrideAt` + optional `nextOverrideSlot`):
+
+- `--next HH:MM` — plain pin: hold every other activation until T, fire once as `reason: "override"`, clear on success. Earlier or later than the next slot; times list and interval chain untouched.
+- `--start HH:MM` — special case of the same pin: on fixed, `next_pending_slot` names the earliest still-reachable incomplete slot and the pin fires *that slot* at T (slot identity preserved, slot marked completed); on interval it fires once at T and the chain continues from that success. Now works on delegated connections too.
+- `--clear-next` drops either pin. Setting one clears the other.
+- Remote path: `POST /v1/connections/<id>/override` with `{"nextOverrideAt": iso|null, "nextOverrideSlot": "HH:MM"|null}` — state only, never a connection re-push, so schedule memory survives. Solo `serve` and `awewarm-hub` both expose it (hub re-authorizes the tenant first).
+- Failures retry under the existing 5-minute throttle; `status` shows `Pinned: …`; the pin is armed into the RTC wake layer.
+- Old `deferUntil` values migrate into a plain pin on first read. Behavior change vs the old gate: a moved slot now fires at T even past the 30-minute catch-up ceiling (catch-up only applied to ungated late fires).
+
 ## v0.6.7
 
 **The event log records; it never leads the state file, so the two can no longer drift apart on a crash.** An activation's outcome mutated the in-memory state and appended its `awewarm.log` line, but the state was only written to disk afterwards by the batch save at the end of the pass — a process killed (or an exit) between the two left a log line whose state change had been rolled back, and `awewarm status` kept showing a stale `Last activation` (a success that the log had already recorded but that never made it into the on-disk state). Both fires — local and delegated — now persist the state to disk *before* appending that activation's log line, so the log is an after-the-fact record that can never stand ahead of the state the scheduler reads. The only allowed divergence is the safe direction (a best-effort log append can drop a line; the state never loses an activation), and a crash in the middle leaves both unchanged — or, at worst, state one step ahead of the log — instead of the other way around.

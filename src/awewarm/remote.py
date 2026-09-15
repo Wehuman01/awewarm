@@ -188,6 +188,23 @@ def run_connection(url, token, conn_id, reset_due=False, allow_auto_disabled=Fal
     )
 
 
+def set_next_override(url, token, conn_id, at, slot=None):
+    """Pin or clear the one-shot next fire on the server.
+
+    `at` is an ISO timestamp with timezone, or None to clear. `slot` (optional
+    HH:MM) names the original fixed slot being moved (`--start`); omit it for
+    a plain pin (`--next`). Unlike a connection push this never rewrites the
+    connection config or resets its schedule memory — only the temporary pin
+    moves.
+    """
+    return _request(
+        url, "POST",
+        f"/v1/connections/{urllib.parse.quote(conn_id, safe='')}/override",
+        {"nextOverrideAt": at, "nextOverrideSlot": slot},
+        token,
+    )
+
+
 def ensure_session(config):
     """Server reachable, claimed, and accepting our token → its state view.
 

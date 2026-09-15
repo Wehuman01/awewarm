@@ -481,7 +481,11 @@ def default_conn_state():
         "lastResult": None,
         "lastError": None,
         "nextDueAt": None,
-        "deferUntil": None,
+        # One-shot pin (unified --start/--next): fire at this moment once.
+        # nextOverrideSlot names the original fixed slot being moved (--start);
+        # None means a plain pin (--next) that fires as reason=override.
+        "nextOverrideAt": None,
+        "nextOverrideSlot": None,
         # Health ladder: failing → degraded → auto-disabled (see schedule.py)
         "failedNodes": 0,
         "nodeKey": None,

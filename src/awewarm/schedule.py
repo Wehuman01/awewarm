@@ -126,6 +126,40 @@ def node_for(action, now):
         return {"key": f"interval {iso(due)}", "dueAt": due}
     if reason == "first-anchor":
         return {"key": "first-anchor", "dueAt": None}
+    if reason == "override":
+        due = action.get("dueAt") or now
+        return {"key": f"override {iso(due)}", "dueAt": due}
+    return None
+
+
+def next_pending_slot(connection, conn_state, now):
+    """Earliest fixed slot not completed/skipped and still reachable, or None.
+
+    Used by `--start` to name the original slot a one-shot pin is moving.
+    Reachable = still inside catch-up today, or any remaining slot on a later
+    active day.
+    """
+    fixed = (connection.get("schedule") or {}).get("fixed") or {}
+    at_times = sorted(fixed.get("at") or [])
+    if not at_times:
+        return None
+    catchup = _catchup(connection)[1]
+    for offset in range(0, 8):
+        day = now.date() + timedelta(days=offset)
+        if not is_active_day(day, fixed.get("days", "weekday")):
+            continue
+        day_key = day.strftime("%Y-%m-%d")
+        done = set((conn_state.get("completedSlots") or {}).get(day_key, []))
+        skipped = set((conn_state.get("skippedSlots") or {}).get(day_key, []))
+        for hhmm in at_times:
+            if hhmm in done or hhmm in skipped:
+                continue
+            slot_at = slot_datetime(day, hhmm, now.tzinfo)
+            if slot_at is None:
+                continue
+            if day == now.date() and now > slot_at + catchup:
+                continue
+            return hhmm
     return None
 
 
@@ -201,9 +235,6 @@ def _due_fixed(connection, conn_state, now):
     slot is marked skipped on that one failure, so it never refires.
     """
     fixed = connection["schedule"].get("fixed") or {}
-    defer = parse_ts(conn_state.get("deferUntil"))
-    if defer is not None and now < defer:
-        return [], None  # --start gate: slots fire late within catch-up once it lifts
     at_times = fixed.get("at") or []
     catchup = _catchup(connection)[1]
     skip_window = timedelta(
@@ -284,9 +315,6 @@ def _probe_at(conn_state, connection):
 def _due_interval(connection, conn_state, now):
     if conn_state.get("autoDisabledAt"):
         return None
-    defer = parse_ts(conn_state.get("deferUntil"))
-    if defer is not None and now < defer:
-        return None
     catchup_attempts, catchup_within = _catchup(connection)
     if not conn_state.get("degradedAt"):
         node_due = parse_ts(conn_state.get("nodeDueAt"))
@@ -323,6 +351,23 @@ def plan_actions(connection, conn_state, now):
     migrate_state(conn_state)
     if conn_state.get("autoDisabledAt"):
         return []
+    # One-shot pin wins over both modes: hold until its moment, then fire
+    # exactly once (success clears it). Failures retry under the throttle.
+    # `--start` on fixed names the original slot (nextOverrideSlot); `--next`
+    # is a plain pin that fires as reason=override.
+    override = parse_ts(conn_state.get("nextOverrideAt"))
+    if override is not None:
+        if now < override or _throttled(conn_state, now):
+            return []
+        slot = conn_state.get("nextOverrideSlot")
+        if slot:
+            return [{
+                "type": "activate",
+                "reason": "fixed",
+                "slot": slot,
+                "slotAt": override,
+            }]
+        return [{"type": "activate", "reason": "override", "dueAt": override}]
     mode = connection["schedule"]["mode"]
     actions = []
     activate = None
@@ -388,6 +433,12 @@ def migrate_state(conn_state):
             conn_state["degradedAt"] = None
     conn_state.pop("intervalDisabledAt", None)
     conn_state.pop("consecutiveFailures", None)
+    # Pre-0.6.9 --start wrote a separate deferUntil gate; fold it into the
+    # unified one-shot pin (plain pin — no slot identity survived the old field).
+    if conn_state.get("deferUntil") and not conn_state.get("nextOverrideAt"):
+        conn_state["nextOverrideAt"] = conn_state["deferUntil"]
+    conn_state.pop("deferUntil", None)
+    conn_state.setdefault("nextOverrideSlot", None)
 
 
 def _open_node(conn_state, node, now):
@@ -454,6 +505,8 @@ def apply_user_anchor(conn_state, connection, reset_at):
     conn_state["lastResult"] = "success"
     conn_state["lastError"] = None
     conn_state["deferUntil"] = None
+    conn_state["nextOverrideAt"] = None
+    conn_state["nextOverrideSlot"] = None
     reset_ladder(conn_state)
     conn_state["nextDueAt"] = iso(compute_next_due(connection, opened_at, jitter_seconds=0))
     _push_history(conn_state, opened_at, "user-anchor", "success", None)
@@ -473,6 +526,8 @@ def record_success(conn_state, connection, now, kind, slot=None, reset_due=True,
     conn_state["lastResult"] = "success"
     conn_state["lastError"] = None
     conn_state["deferUntil"] = None
+    conn_state["nextOverrideAt"] = None
+    conn_state["nextOverrideSlot"] = None
     reset_ladder(conn_state)
     if kind == "fixed" and slot:
         day_key = (slot_at or now).strftime("%Y-%m-%d")
@@ -534,9 +589,13 @@ def next_due(connection, conn_state, now):
     migrate_state(conn_state)
     if conn_state.get("autoDisabledAt"):
         return None, None
+    override = parse_ts(conn_state.get("nextOverrideAt"))
+    if override is not None:
+        moment = override if override > now else now
+        kind = "fixed (moved)" if conn_state.get("nextOverrideSlot") else "override"
+        return moment, kind
     mode = connection["schedule"]["mode"]
     candidates = []
-    defer = parse_ts(conn_state.get("deferUntil"))
     if mode == "fixed":
         fixed = connection["schedule"].get("fixed") or {}
         catchup = _catchup(connection)[1]
@@ -554,10 +613,10 @@ def next_due(connection, conn_state, now):
                         continue
                     if slot_at + catchup <= now and day == now.date():
                         continue  # today's slot is already past its catch-up
-                    moment, kind = slot_at, "fixed"
-                    if defer is not None and defer > moment:
-                        moment, kind = defer, "fixed (deferred)"
-                    candidates.append((moment, "fixed (single-shot)" if conn_state.get("degradedAt") else kind))
+                    candidates.append((
+                        slot_at,
+                        "fixed (single-shot)" if conn_state.get("degradedAt") else "fixed",
+                    ))
                     break
                 if candidates:
                     break
@@ -566,8 +625,6 @@ def next_due(connection, conn_state, now):
         if conn_state.get("degradedAt"):
             probe_at = _probe_at(conn_state, connection)
             if probe_at is not None and now < probe_at:
-                if defer is not None and defer > probe_at:
-                    probe_at = defer
                 candidates.append((probe_at, "interval (probing after failures)"))
             else:
                 candidates.append((now, "interval (probing after failures)"))
@@ -576,15 +633,11 @@ def next_due(connection, conn_state, now):
             floor = parse_ts(conn_state.get("nextDueAt"))
             if floor is not None and floor > moment:
                 moment = floor  # backoff from a lost first-anchor node
-            if defer is not None and defer > moment:
-                moment = defer
             candidates.append((moment, "interval (first anchor)"))
         else:
             due = parse_ts(conn_state.get("nextDueAt"))
             if due is None:
                 due = compute_next_due(connection, _last_success(conn_state), jitter_seconds=0)
-            if defer is not None and defer > due:
-                due = defer
             candidates.append((due, "interval"))
     if not candidates:
         return None, None
