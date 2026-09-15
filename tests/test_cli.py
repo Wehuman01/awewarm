@@ -978,6 +978,17 @@ class StatusTests(IsolatedTestCase):
         self.assertIn("Scheduler: not installed", result.output)
         self.assertNotIn("Last result:", result.output)
 
+    def test_status_account_label_embeds_the_account_no_double_parens(self):
+        # An aweswitch account label already carries the account, e.g.
+        # "Codex (cxo-heck)"; appending "(codex-cxo-heck)" doubles the parens.
+        conn = account_connection(mode="fixed")
+        conn["label"] = "Codex (cxo-heck)"
+        write_config(conn, conn_id="codex-cxo-heck")
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Codex (cxo-heck) — connected", result.output)
+        self.assertNotIn("(codex-cxo-heck)", result.output)
+
     def test_status_shows_last_failure_detail(self):
         write_config(account_connection(mode="fixed"))
         state = cfg.empty_state()

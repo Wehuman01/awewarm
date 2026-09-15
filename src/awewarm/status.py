@@ -20,6 +20,7 @@ from .config import (
     load_config,
     load_state,
     save_state,
+    slugify,
 )
 
 
@@ -27,10 +28,19 @@ def _status_block(conn_id, conn, state, now, detailed, where=None):
     from . import cli
     errors = connection_errors(conn, conn_id)
     cs = conn_state(state, conn_id)
+    # A `label` that already names the account is self-explanatory: an aweswitch
+    # account label "Codex (cxo-heck)" carries the account in its own
+    # parenthetical while its conn id may be the full slug ("codex-cxo-heck")
+    # or just the account ("cxo-peng"); repeating the id would double the parens.
+    # Plain labels keep the id paren: "doubao (doubao)".
+    label = conn.get("label") or conn_id
+    inner = label.rsplit("(", 1)[-1].strip(")") if "(" in label else None
+    self_labeled = slugify(label) == conn_id or inner == conn_id
+    head = label if "(" in label and self_labeled else f"{label} ({conn_id})"
     schedule.migrate_state(cs)
     enabled = conn.get("enabled", True)
     word = schedule.status_word(conn_id, conn, cs)
-    click.echo(f"\n{conn.get('label', conn_id)} ({conn_id}) — {word}" + (f" · {where}" if where else ""))
+    click.echo(f"\n{head} — {word}" + (f" · {where}" if where else ""))
     if errors:
         click.echo(f"  Problem: {errors[0]}")
         return
