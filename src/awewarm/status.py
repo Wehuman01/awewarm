@@ -86,8 +86,12 @@ def _status_block(conn_id, conn, state, now, detailed, where=None):
     pin = schedule.parse_ts(cs.get("nextOverrideAt"))
     if pin is not None:
         slot = cs.get("nextOverrideSlot")
+        day = cs.get("nextOverrideSlotDay")
         moved = f" slot {slot}" if slot else ""
-        click.echo(f"  Pinned: {cli._fmt_moment(pin, now)}{moved} (one-shot; clears on success)")
+        if day and pin.date().strftime("%Y-%m-%d") != day:
+            moved += f" (moved from {day})"
+        held = "; held while auto-disabled" if cs.get("autoDisabledAt") else ""
+        click.echo(f"  Pinned: {cli._fmt_moment(pin, now)}{moved} (one-shot{held}; clears on success)")
     if not enabled:
         click.echo("  Next due: none (disabled)")
         return
@@ -118,17 +122,30 @@ def _fetch_remote_view(config, state):
         return None, f"server unreachable ({exc})"
 
 
-def _no_visible_reason(config, include_disabled):
-    """One empty-listing message: why nothing is visible, and how to see it."""
-    if not config["connections"]:
+def _no_visible_reason(connections, include_disabled):
+    """One empty-listing message: why nothing is visible, and how to see it.
+
+    `connections` is the scope the listing covered (all of them, or just the
+    local ones under --local) — the reason must describe that scope, not the
+    whole config.
+    """
+    if not connections:
         return "No connections yet.\nrun: awewarm init\n or: awewarm config add"
-    unhidden = [c for c in config["connections"].values() if not c.get("hide")]
+    hidden = [c for c in connections.values() if c.get("hide")]
+    unhidden = [c for c in connections.values() if not c.get("hide")]
     if unhidden and not include_disabled:
-        # Everything still on disk is user-disabled, not hide.
+        # The listing is empty because every unhidden connection is disabled.
+        if not hidden:
+            return (
+                "No enabled connections — every connection is disabled.\n"
+                "resume with: awewarm config set <id> --on\n"
+                "or list them: awewarm status --all"
+            )
         return (
-            "No enabled connections — every connection is disabled.\n"
+            "No visible enabled connections — the rest are hidden or disabled.\n"
+            "unhide with: awewarm config set <id> --show\n"
             "resume with: awewarm config set <id> --on\n"
-            "or list them: awewarm status --all"
+            "or list disabled: awewarm status --all"
         )
     return (
         "No visible connections — all are hidden from status.\n"
@@ -201,12 +218,20 @@ def _show_status(connection, as_json, location=None, include_disabled=False):
             else:
                 click.echo("No connections yet.\nrun: awewarm init\n or: awewarm config add")
         elif location is False:
-            if any(c.get("location") == "remote" for c in config["connections"].values()):
+            # The "everything is delegated" claim must hold against the local
+            # connections actually on disk — invisible local ones (disabled,
+            # hidden) still exist and deserve their own reason, not a false
+            # "no local connections".
+            local = {
+                cid: c for cid, c in config["connections"].items()
+                if c.get("location") != "remote"
+            }
+            if not local and any(c.get("location") == "remote" for c in config["connections"].values()):
                 click.echo("No local connections — every connection is delegated (view them: awewarm status --remote)")
             else:
-                click.echo(_no_visible_reason(config, include_disabled))
+                click.echo(_no_visible_reason(local or config["connections"], include_disabled))
         else:
-            click.echo(_no_visible_reason(config, include_disabled))
+            click.echo(_no_visible_reason(config["connections"], include_disabled))
         return
     now = cli._now(config)
     if location and remote_view:

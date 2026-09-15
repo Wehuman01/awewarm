@@ -9,6 +9,7 @@ from awewarm.config import default_conn_state
 
 TZ = ZoneInfo("Asia/Taipei")
 WEDNESDAY = date(2026, 8, 19)  # a weekday
+THURSDAY = date(2026, 8, 20)
 SATURDAY = date(2026, 8, 22)
 
 
@@ -124,33 +125,98 @@ class FixedTests(unittest.TestCase):
         self.assertEqual(len(activates), 1)
         self.assertEqual(activates[0]["slot"], "06:35")
 
-    def test_start_gate_holds_slot_then_fires_within_catchup(self):
+    def test_move_slot_gate_holds_slot_then_fires_within_catchup(self):
         conn_state = default_conn_state()
         conn = account_connection()  # slot 06:35
-        slot = schedule.next_pending_slot(conn, conn_state, at(WEDNESDAY, "06:00"))
+        slot_day, slot = schedule.next_pending_slot(conn, conn_state, at(WEDNESDAY, "06:00"))
         self.assertEqual(slot, "06:35")
+        self.assertEqual(slot_day, WEDNESDAY.strftime("%Y-%m-%d"))
         conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "07:00"))
         conn_state["nextOverrideSlot"] = slot
+        conn_state["nextOverrideSlotDay"] = slot_day
         self.assertEqual(schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "06:36")), [])
         actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "07:00"))
         self.assertEqual(actions[0]["type"], "activate")
         self.assertEqual(actions[0]["reason"], "fixed")
         self.assertEqual(actions[0]["slot"], "06:35")
         self.assertEqual(actions[0]["slotAt"], at(WEDNESDAY, "07:00"))
+        self.assertEqual(actions[0]["slotDay"], WEDNESDAY.strftime("%Y-%m-%d"))
 
-    def test_start_moves_slot_even_past_catchup(self):
-        # --start names the pending slot; the pin fires it at T regardless of
+    def test_move_slot_fires_even_past_catchup(self):
+        # --move-slot names the pending slot; the pin fires it at T regardless of
         # the old catch-up ceiling (that ceiling only applied to ungated slots).
         conn_state = default_conn_state()
         conn = account_connection()
-        slot = schedule.next_pending_slot(conn, conn_state, at(WEDNESDAY, "06:00"))
+        slot_day, slot = schedule.next_pending_slot(conn, conn_state, at(WEDNESDAY, "06:00"))
         conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "09:00"))
         conn_state["nextOverrideSlot"] = slot
+        conn_state["nextOverrideSlotDay"] = slot_day
         actions = self.plan(conn_state, at(WEDNESDAY, "09:00"))
         self.assertEqual(actions[0]["reason"], "fixed")
         self.assertEqual(actions[0]["slot"], "06:35")
 
-    def test_start_pin_clears_on_fixed_success(self):
+    def test_move_slot_pin_cross_day_marks_origin_slot_done(self):
+        # Today's slot already fired, so --move-slot at noon moves TOMORROW's slot
+        # to tonight. The moved slot must complete on its own day — otherwise
+        # it fires twice: once at the pin, again on its real day.
+        conn_state = default_conn_state()
+        conn = account_connection()
+        wed, thu = (d.strftime("%Y-%m-%d") for d in (WEDNESDAY, THURSDAY))
+        conn_state["completedSlots"][wed] = ["06:35"]
+        day, slot = schedule.next_pending_slot(conn, conn_state, at(WEDNESDAY, "12:00"))
+        self.assertEqual((day, slot), (thu, "06:35"))
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "23:00"))
+        conn_state["nextOverrideSlot"] = slot
+        conn_state["nextOverrideSlotDay"] = day
+        nodes = []
+
+        def activate(action, node):
+            nodes.append(node)
+            schedule.record_success(
+                conn_state, conn, at(WEDNESDAY, "23:00"), action["reason"],
+                action.get("slot"), slot_at=(node or {}).get("dueAt"),
+                slot_day=(node or {}).get("slotDay"),
+            )
+            return {"ok": True, "detail": None}
+
+        results, _ = schedule.dispatch_actions(conn, conn_state, at(WEDNESDAY, "23:00"), activate)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(nodes[0].get("slotDay"), thu)
+        self.assertIsNone(conn_state.get("nextOverrideAt"))
+        self.assertIn("06:35", conn_state["completedSlots"].get(thu, []))
+        # The moved slot does not fire again on its own day.
+        self.assertEqual(schedule.plan_actions(conn, conn_state, at(THURSDAY, "06:36")), [])
+
+    def test_move_slot_pin_cross_day_failure_skips_origin_slot(self):
+        # The failure ladder must skip the moved slot on its own day too.
+        conn_state = default_conn_state()
+        conn = account_connection()
+        wed, thu = (d.strftime("%Y-%m-%d") for d in (WEDNESDAY, THURSDAY))
+        conn_state["completedSlots"][wed] = ["06:35"]
+        conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "23:00"))
+        conn_state["nextOverrideSlot"] = "06:35"
+        conn_state["nextOverrideSlotDay"] = thu
+
+        def fail(action, node):
+            schedule.record_failure(
+                conn_state, conn, now_moment[0], action["reason"], "boom", node=node
+            )
+            return {"ok": False, "detail": "boom"}
+
+        now_moment = [at(WEDNESDAY, "23:00")]
+        for _ in range(schedule.DEFAULT_CATCHUP_ATTEMPTS):
+            schedule.dispatch_actions(conn, conn_state, now_moment[0], fail)
+            now_moment[0] += timedelta(minutes=6)  # past the retry throttle
+        # The pin itself survives (throttled retries, ladder is the brake),
+        # but the exhausted node must skip the moved slot on its own day.
+        self.assertEqual(conn_state["skippedSlots"].get(thu), ["06:35"])
+        # Drop the pin as a user would, and the slot does not refire on its day.
+        conn_state["nextOverrideAt"] = None
+        conn_state["nextOverrideSlot"] = None
+        conn_state["nextOverrideSlotDay"] = None
+        self.assertEqual(schedule.plan_actions(conn, conn_state, at(THURSDAY, "06:36")), [])
+
+    def test_move_slot_pin_clears_on_fixed_success(self):
         conn_state = default_conn_state()
         conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "07:00"))
         conn_state["nextOverrideSlot"] = "06:35"
@@ -251,12 +317,12 @@ class IntervalTests(unittest.TestCase):
         conn_state["intervalDisabledAt"] = schedule.iso(at(WEDNESDAY, "08:00"))
         self.assertEqual(schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "12:10")), [])
 
-    def test_start_gate_blocks_first_anchor(self):
+    def test_next_gate_blocks_first_anchor(self):
         conn_state = default_conn_state()
         conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "09:00"))
         self.assertEqual(schedule.plan_actions(self.interval_conn(), conn_state, at(WEDNESDAY, "08:59")), [])
 
-    def test_start_gate_blocks_due_chain(self):
+    def test_next_gate_blocks_due_chain(self):
         conn_state = default_conn_state()
         conn = self.interval_conn()
         schedule.record_success(conn_state, conn, at(WEDNESDAY, "02:00"), "interval")
@@ -265,7 +331,7 @@ class IntervalTests(unittest.TestCase):
         actions = schedule.plan_actions(conn, conn_state, at(WEDNESDAY, "09:30"))
         self.assertEqual(actions[0]["reason"], "override")
 
-    def test_start_gate_clears_on_success(self):
+    def test_next_gate_clears_on_success(self):
         conn_state = default_conn_state()
         conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "09:00"))
         schedule.record_success(conn_state, self.interval_conn(), at(WEDNESDAY, "09:01"), "first-anchor")

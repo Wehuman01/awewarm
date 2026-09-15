@@ -116,11 +116,16 @@ def node_for(action, now):
     """
     reason = action.get("reason")
     if reason == "fixed":
-        return {
+        node = {
             "key": f"{action['slotAt'].strftime('%Y-%m-%d')} {action['slot']}",
             "dueAt": action["slotAt"],
             "slot": action["slot"],
         }
+        if action.get("slotDay"):
+            # A moved slot (--next --move-slot): completion/skip bookkeeping
+            # belongs to the slot's own day, not the pin's landing day.
+            node["slotDay"] = action["slotDay"]
+        return node
     if reason == "interval":
         due = action.get("dueAt") or now
         return {"key": f"interval {iso(due)}", "dueAt": due}
@@ -135,9 +140,13 @@ def node_for(action, now):
 def next_pending_slot(connection, conn_state, now):
     """Earliest fixed slot not completed/skipped and still reachable, or None.
 
-    Used by `--start` to name the original slot a one-shot pin is moving.
+    Used by `--next --move-slot` to name the original slot a one-shot pin
+    is moving.
     Reachable = still inside catch-up today, or any remaining slot on a later
-    active day.
+    active day. Returns (day, HH:MM) — the slot's own calendar day, because
+    completion bookkeeping keys by day: a pin may land on a different day
+    than the slot it moves, and the moved slot must be marked done on its
+    own day or it fires twice.
     """
     fixed = (connection.get("schedule") or {}).get("fixed") or {}
     at_times = sorted(fixed.get("at") or [])
@@ -159,7 +168,7 @@ def next_pending_slot(connection, conn_state, now):
                 continue
             if day == now.date() and now > slot_at + catchup:
                 continue
-            return hhmm
+            return day.strftime("%Y-%m-%d"), hhmm
     return None
 
 
@@ -353,20 +362,23 @@ def plan_actions(connection, conn_state, now):
         return []
     # One-shot pin wins over both modes: hold until its moment, then fire
     # exactly once (success clears it). Failures retry under the throttle.
-    # `--start` on fixed names the original slot (nextOverrideSlot); `--next`
-    # is a plain pin that fires as reason=override.
+    # `--next --move-slot` on fixed names the original slot
+    # (nextOverrideSlot); plain `--next` fires as reason=override.
     override = parse_ts(conn_state.get("nextOverrideAt"))
     if override is not None:
         if now < override or _throttled(conn_state, now):
             return []
         slot = conn_state.get("nextOverrideSlot")
         if slot:
-            return [{
+            action = {
                 "type": "activate",
                 "reason": "fixed",
                 "slot": slot,
                 "slotAt": override,
-            }]
+            }
+            if conn_state.get("nextOverrideSlotDay"):
+                action["slotDay"] = conn_state["nextOverrideSlotDay"]
+            return [action]
         return [{"type": "activate", "reason": "override", "dueAt": override}]
     mode = connection["schedule"]["mode"]
     actions = []
@@ -433,12 +445,14 @@ def migrate_state(conn_state):
             conn_state["degradedAt"] = None
     conn_state.pop("intervalDisabledAt", None)
     conn_state.pop("consecutiveFailures", None)
-    # Pre-0.6.9 --start wrote a separate deferUntil gate; fold it into the
-    # unified one-shot pin (plain pin — no slot identity survived the old field).
+    # Pre-0.6.9 --start (now --next --move-slot) wrote a separate deferUntil
+    # gate; fold it into the unified one-shot pin (plain pin — no slot
+    # identity survived the old field).
     if conn_state.get("deferUntil") and not conn_state.get("nextOverrideAt"):
         conn_state["nextOverrideAt"] = conn_state["deferUntil"]
     conn_state.pop("deferUntil", None)
     conn_state.setdefault("nextOverrideSlot", None)
+    conn_state.setdefault("nextOverrideSlotDay", None)
 
 
 def _open_node(conn_state, node, now):
@@ -446,6 +460,7 @@ def _open_node(conn_state, node, now):
         conn_state["nodeKey"] = node["key"]
         conn_state["nodeDueAt"] = iso(node.get("dueAt") or now)
         conn_state["nodeSlot"] = node.get("slot")
+        conn_state["nodeSlotDay"] = node.get("slotDay")
         conn_state["nodeAttempts"] = 0
 
 
@@ -456,12 +471,15 @@ def close_lost_node(conn_state, connection, now, why):
     """
     slot = conn_state.get("nodeSlot")
     node_due = parse_ts(conn_state.get("nodeDueAt"))
+    slot_day = conn_state.get("nodeSlotDay")
     conn_state["nodeKey"] = None
     conn_state["nodeDueAt"] = None
     conn_state["nodeSlot"] = None
+    conn_state["nodeSlotDay"] = None
     conn_state["nodeAttempts"] = 0
     if slot and node_due is not None and connection["schedule"]["mode"] == "fixed":
-        day_key = node_due.strftime("%Y-%m-%d")
+        # A moved slot skips on its own day — same rule as its completion.
+        day_key = slot_day or node_due.strftime("%Y-%m-%d")
         slots = conn_state.setdefault("skippedSlots", {}).setdefault(day_key, [])
         if slot not in slots:
             slots.append(slot)
@@ -507,6 +525,7 @@ def apply_user_anchor(conn_state, connection, reset_at):
     conn_state["deferUntil"] = None
     conn_state["nextOverrideAt"] = None
     conn_state["nextOverrideSlot"] = None
+    conn_state["nextOverrideSlotDay"] = None
     reset_ladder(conn_state)
     conn_state["nextDueAt"] = iso(compute_next_due(connection, opened_at, jitter_seconds=0))
     _push_history(conn_state, opened_at, "user-anchor", "success", None)
@@ -516,11 +535,14 @@ def record_attempt(conn_state, now):
     conn_state["lastAttemptAt"] = iso(now)
 
 
-def record_success(conn_state, connection, now, kind, slot=None, reset_due=True, slot_at=None):
+def record_success(conn_state, connection, now, kind, slot=None, reset_due=True, slot_at=None, slot_day=None):
     """Apply a successful activation: anchor, renewal chain, slot completion.
 
     reset_due=False keeps the interval chain's nextDueAt untouched, for manual
     fires that must not push the renewal cadence out by a full window.
+    slot_day (YYYY-MM-DD) overrides the completion day for a moved slot
+    (--next --move-slot): the pin may fire on a different day than the slot
+    it moves.
     """
     conn_state["lastActivationAt"] = iso(now)
     conn_state["lastResult"] = "success"
@@ -528,9 +550,10 @@ def record_success(conn_state, connection, now, kind, slot=None, reset_due=True,
     conn_state["deferUntil"] = None
     conn_state["nextOverrideAt"] = None
     conn_state["nextOverrideSlot"] = None
+    conn_state["nextOverrideSlotDay"] = None
     reset_ladder(conn_state)
     if kind == "fixed" and slot:
-        day_key = (slot_at or now).strftime("%Y-%m-%d")
+        day_key = slot_day or (slot_at or now).strftime("%Y-%m-%d")
         slots = conn_state["completedSlots"].setdefault(day_key, [])
         if slot not in slots:
             slots.append(slot)

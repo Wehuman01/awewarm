@@ -164,7 +164,7 @@ awewarm 是一组面向 AI 编程 agent 的工具的一部分：
 
 - 时间点到了但机器在睡眠？在补跑窗口内（默认 30 分钟）仍会补发；超时则记为跳过。
 - 距离上一次成功不足 30 分钟的时间点会自动跳过 —— 绝不重复为一个还热着的窗口买单。
-- `--start HH:MM` 是一次性 **槽位挪动**：点名下一个待触发的 fixed 时间点，在新时刻 *以该时间点身份* 发射（今天已过则顺延到明天）—— times 列表本身不动，原时间点记为已完成。实现上是 `--next` 的特例（共用同一 state 钉）。对已委派连接同样可用。
+- `--next HH:MM --move-slot` 是一次性 **槽位挪动**：点名下一个待触发的 fixed 时间点，在新时刻 *以该时间点身份* 发射（今天已过则顺延到明天）—— times 列表本身不动，原时间点在它自己的日期记为完成。是 `--next` 的特例（共用同一 state 钉）。对已委派连接同样可用。
 - 唯一在窗口语义未知时也能用的模式，未验证的套餐因此从这里起步。
 - 添加流程里窗口时长已知时，awewarm 会询问套餐每日配额的重置时间，并据此提供全天网格 —— 每个窗口一个时间点、间隔为窗口 + 5 分钟（例如重置 01:14 + 5 小时窗口 → 01:14, 06:19, 11:24, 16:29, 21:34）；拒绝则只保留你输入的时间。套餐选择 fixed 添加时会先问窗口时长（默认 300）—— 它决定网格间隔，并记录为 user-confirmed 窗口、解锁 interval 模式。
 
@@ -177,7 +177,7 @@ awewarm config set claude-code --mode fixed
 
 ### `interval` —— 滚动续期
 
-每次成功后，下一条请求排在「窗口时长 + 余量」之后（默认 300 分钟 + 75 秒，另加最多 30 秒抖动）。余量加在旧窗口**关闭之后** —— 提前发只会落进旧窗口，什么也开启不了。还没有成功记录时，会立即发一条作为首个锚点 —— 也可以用 `--start HH:MM` 把起点挪到该时刻：钉在那一刻发一次，续期链从这次成功继续。同一钉也适用于 fixed 模式（见上）。
+每次成功后，下一条请求排在「窗口时长 + 余量」之后（默认 300 分钟 + 75 秒，另加最多 30 秒抖动）。余量加在旧窗口**关闭之后** —— 提前发只会落进旧窗口，什么也开启不了。还没有成功记录时，会立即发一条作为首个锚点 —— 也可以用 `--next HH:MM` 把起点挪到该时刻：钉在那一刻发一次，续期链从这次成功继续。fixed 模式的挪槽用同一枚钉（`--next T --move-slot`，见上）。
 
 ```bash
 awewarm run my-plan                        # 1. 发一条最小请求并记下时间
@@ -192,14 +192,14 @@ awewarm config set my-plan --mode interval # 3. 滚动续期
 
 ### 临时挪动下次触发
 
-两个入口共用同一 state 钉（`nextOverrideAt`，可选 `nextOverrideSlot`）。设置其中一个会清掉另一个；首次成功后自动清除。**对已委派连接同样可用**（`POST /v1/connections/<id>/override`，只改 state，不会重新 push 连接）。
+两种形态共用同一 state 钉（`nextOverrideAt`，可选 `nextOverrideSlot`）。设置新的会替换旧的；首次成功后自动清除。**对已委派连接同样可用**（`POST /v1/connections/<id>/override`，只改 state，不会重新 push 连接）。
 
-- `--start HH:MM` —— **挪动原槽 / 原激活**：fixed 会点名下一个待触发时间点，并在 T *以该时间点身份* 发射（保留槽位身份；times 列表不动）；interval 在 T 发一次，续期链从这次成功继续。
-- `--next HH:MM` —— **普通钉住**：在 T 只发一次（以 `override` 身份，不绑定具体槽位），随后恢复正常调度。可早可晚。
+- `--next HH:MM` —— **钉住下次触发**：在 T 只发一次（以 `override` 身份，不绑定具体槽位），随后恢复正常调度。可早可晚。interval 的续期链从该次成功重新起算 —— 全新连接的首个锚点也能这样推迟。
+- `--next HH:MM --move-slot` —— **槽位挪动特例**：点名下一个待触发的 fixed 时间点，并在 T *以该时间点身份* 发射（保留槽位身份；times 不动；原时间点在它自己的日期记为完成）。interval 无槽可挪 —— 普通 `--next` 本来就会从该次成功续链。
 - `--clear-next` —— 取消钉住。
 
 ```bash
-awewarm config set glm-remote --start 16:05   # 今天的 16:00 挪到 16:05 发
+awewarm config set glm-remote --next 16:05 --move-slot   # 今天的 16:00 挪到 16:05 发
 awewarm config set glm-remote --next 14:38    # 14:38 发一次；16:00 照常
 awewarm config set glm-remote --clear-next    # 取消钉住
 awewarm status glm-remote                     # 钉住期间显示 "Pinned: …"
@@ -469,7 +469,7 @@ awewarm init                          # 交互式引导：扫描账号、选择�
 awewarm discover                      # 纯读扫描本机 CLI 与登录态
 awewarm config add                    # 添加连接：本机账号或订阅 endpoint
 awewarm config set <id> [flags]       # 查看或修改设置：--times、--days、--mode、--on/--off、--hide/--show、
-                                       #   --anchor、--start、--window、--api-key、--wake/--no-wake、--remote/--local、
+                                       #   --anchor、--next/--move-slot/--clear-next、--window、--api-key、--wake/--no-wake、--remote/--local、
                                        #   --catchup-minutes、--catchup-attempts、--degrade-after-nodes、
                                        #   --inherit-schedule（丢弃自身调度覆盖，改为跟随上层）
 awewarm config settings [scope] [flags]  # 查看或修改 settings 层：scope 为 global（默认）、local 或 remote；

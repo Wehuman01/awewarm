@@ -929,9 +929,41 @@ class DisabledListingTests(IsolatedTestCase):
         data["connections"]["claude-code-main"] = conn
         cfg.save_config(data)
         result = invoke(["status"])
-        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertEqual(result.exit_code, 0)
         self.assertIn("--all", result.output)
         self.assertIn("--on", result.output)
+
+    def test_status_local_names_disabled_local_before_delegated(self):
+        # A disabled local connection still exists; --local must say so
+        # instead of claiming every connection is delegated.
+        data = cfg.empty_config()
+        off = account_connection(mode="fixed")
+        off["enabled"] = False
+        data["connections"]["claude-code-main"] = off
+        delegated = plan_connection(mode="fixed")
+        delegated["location"] = "remote"
+        data["connections"]["glm-coding-plan"] = delegated
+        cfg.save_config(data)
+        result = invoke(["status", "--local"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertNotIn("every connection is delegated", result.output)
+        self.assertIn("every connection is disabled", result.output)
+        self.assertIn("--on", result.output)
+
+    def test_status_mixed_hidden_and_disabled_mentions_both(self):
+        data = cfg.empty_config()
+        hidden = account_connection(mode="fixed")
+        hidden["hide"] = True
+        data["connections"]["claude-code-main"] = hidden
+        off = plan_connection(mode="fixed")
+        off["enabled"] = False
+        data["connections"]["glm-coding-plan"] = off
+        cfg.save_config(data)
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("hidden or disabled", result.output)
+        self.assertIn("--show", result.output)
+        self.assertIn("--all", result.output)
 
 
 class ApiKeySetTests(IsolatedTestCase):
@@ -1062,6 +1094,32 @@ class StatusTests(IsolatedTestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Times: 06:35 (weekday)", result.output)
         self.assertIn("Window: 300 minutes, verified (evidence: builtin-provider)", result.output)
+
+    def test_status_pin_shows_moved_from_day(self):
+        write_config(plan_connection(mode="fixed", fixed_at=("16:00",)))
+        state = cfg.load_state()
+        cs = cfg.conn_state(state, "claude-code-main")
+        cs["nextOverrideAt"] = schedule.iso(datetime(2026, 8, 21, 23, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+        cs["nextOverrideSlot"] = "16:00"
+        cs["nextOverrideSlotDay"] = "2026-08-24"
+        cfg.save_state(state)
+        result = invoke(["status", "claude-code-main"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("Pinned:", result.output)
+        self.assertIn("slot 16:00", result.output)
+        self.assertIn("moved from 2026-08-24", result.output)
+
+    def test_status_pin_says_held_while_auto_disabled(self):
+        write_config(plan_connection(mode="fixed", fixed_at=("16:00",)))
+        state = cfg.load_state()
+        cs = cfg.conn_state(state, "claude-code-main")
+        cs["nextOverrideAt"] = schedule.iso(datetime(2026, 8, 21, 23, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+        cs["autoDisabledAt"] = schedule.iso(datetime(2026, 8, 20, 23, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+        cfg.save_state(state)
+        result = invoke(["status", "claude-code-main"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("Pinned:", result.output)
+        self.assertIn("held while auto-disabled", result.output)
 
     def test_status_interval_shows_window_not_times(self):
         write_config(account_connection(mode="interval"))
@@ -1412,50 +1470,48 @@ class AnchorTests(IsolatedTestCase):
         self.assertEqual(schedule.parse_ts(cs["nextDueAt"]).strftime("%H:%M"), "13:28")
 
 
-class StartTests(IsolatedTestCase):
+class NextPinTests(IsolatedTestCase):
     def interval_conn(self):
         return write_config(
             plan_connection(mode="interval", fixed_at=(), window_status="user-confirmed", duration=300)
         )
 
-    def test_start_defers_until_later_today(self):
+    def test_next_defers_interval_first_anchor(self):
         self.interval_conn()
         with mock.patch("awewarm.cli._now") as now:
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
             now.return_value = datetime(2026, 8, 19, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-            result = invoke(["config", "set", "claude-code-main", "--start", "13:27"])
+            result = invoke(["config", "set", "claude-code-main", "--next", "13:27"])
         self.assertEqual(result.exit_code, 0, output_of(result))
-        self.assertIn("deferred until", result.output)
+        self.assertIn("pinned", result.output)
+        self.assertIn("renews from that fire", result.output)
         cs = cfg.load_state()["connections"]["claude-code-main"]
         self.assertEqual(schedule.parse_ts(cs["nextOverrideAt"]).strftime("%H:%M"), "13:27")
         self.assertIsNone(cs.get("nextOverrideSlot"))
 
-    def test_start_rolls_to_tomorrow_when_passed(self):
+    def test_next_rolls_to_tomorrow_when_passed(self):
         self.interval_conn()
         with mock.patch("awewarm.cli._now") as now:
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
             now.return_value = datetime(2026, 8, 19, 23, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-            result = invoke(["config", "set", "claude-code-main", "--start", "06:00"])
+            result = invoke(["config", "set", "claude-code-main", "--next", "06:00"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         cs = cfg.load_state()["connections"]["claude-code-main"]
         pin = schedule.parse_ts(cs["nextOverrideAt"])
         self.assertEqual(pin.strftime("%m-%d %H:%M"), "08-20 06:00")
 
-    def test_start_rejects_bad_format(self):
+    def test_move_slot_rejected_without_next(self):
         self.interval_conn()
-        result = invoke(["config", "set", "claude-code-main", "--start", "25:00"])
+        result = invoke(["config", "set", "claude-code-main", "--move-slot"])
         self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("HH:MM", result.output)
+        self.assertIn("combines only with --next", output_of(result))
+        result = invoke(["config", "set", "claude-code-main", "--move-slot", "--clear-next"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("combines only with --next", output_of(result))
 
-    def test_start_moves_next_fixed_slot(self):
+    def test_move_slot_moves_next_fixed_slot(self):
         write_config(plan_connection(mode="fixed", fixed_at=("16:00",)))
         with mock.patch("awewarm.cli._now") as now:
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
             now.return_value = datetime(2026, 8, 19, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-            result = invoke(["config", "set", "claude-code-main", "--start", "16:05"])
+            result = invoke(["config", "set", "claude-code-main", "--next", "16:05", "--move-slot"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("slot 16:00 moved to", result.output)
         self.assertIn("16:05", result.output)
@@ -1466,22 +1522,34 @@ class StartTests(IsolatedTestCase):
         conn = cfg.load_config()["connections"]["claude-code-main"]
         self.assertEqual(conn["schedule"]["fixed"]["at"], ["16:00"])
 
-    def test_start_keeps_fixed_mode(self):
+    def test_move_slot_keeps_fixed_mode(self):
         write_config(plan_connection(mode="fixed", fixed_at=("23:00",), window_status="user-confirmed", duration=300))
-        result = invoke(["config", "set", "claude-code-main", "--start", "23:30"])
+        result = invoke(["config", "set", "claude-code-main", "--next", "23:30", "--move-slot"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         self.assertIn("slot 23:00 moved to", result.output)
         conn = cfg.load_config()["connections"]["claude-code-main"]
         self.assertEqual(conn["schedule"]["mode"], "fixed")
         self.assertEqual(conn["schedule"]["fixed"]["at"], ["23:00"])
 
-    def test_mode_and_start_combine_in_one_call(self):
+    def test_move_slot_cross_day_stores_slot_day(self):
+        # Friday evening: the pending weekday slot lives on Monday, so the
+        # pin must remember the slot's own day or Monday would fire twice.
+        write_config(plan_connection(mode="fixed", fixed_at=("16:00",), days="weekday"))
+        with mock.patch("awewarm.cli._now") as now:
+            now.return_value = datetime(2026, 8, 21, 18, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            result = invoke(["config", "set", "claude-code-main", "--next", "23:00", "--move-slot"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("slot 16:00 moved to", result.output)
+        cs = cfg.load_state()["connections"]["claude-code-main"]
+        self.assertEqual(cs.get("nextOverrideSlot"), "16:00")
+        self.assertEqual(cs.get("nextOverrideSlotDay"), "2026-08-24")
+
+    def test_mode_and_move_slot_combine_in_one_call(self):
+        # Switching to interval in the same call: no slot to name, plain pin.
         write_config(plan_connection(mode="fixed", window_status="user-confirmed", duration=300))
         with mock.patch("awewarm.cli._now") as now:
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
             now.return_value = datetime(2026, 8, 19, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-            result = invoke(["config", "set", "claude-code-main", "--mode", "interval", "--start", "13:27"])
+            result = invoke(["config", "set", "claude-code-main", "--mode", "interval", "--next", "13:27", "--move-slot"])
         self.assertEqual(result.exit_code, 0, output_of(result))
         conn = cfg.load_config()["connections"]["claude-code-main"]
         self.assertEqual(conn["schedule"]["mode"], "interval")
@@ -1501,7 +1569,7 @@ class StartTests(IsolatedTestCase):
         self.assertEqual(schedule.parse_ts(cs["nextOverrideAt"]).strftime("%H:%M"), "14:38")
         self.assertIsNone(cs.get("nextOverrideSlot"))
 
-    def test_next_clears_start_pin(self):
+    def test_next_replaces_move_slot_pin(self):
         write_config(plan_connection(mode="fixed", fixed_at=("16:00",)))
         state = cfg.load_state()
         cs = cfg.conn_state(state, "claude-code-main")
@@ -1538,9 +1606,6 @@ class StartTests(IsolatedTestCase):
         result = invoke(["config", "set", "claude-code-main", "--next", "14:38", "--clear-next"])
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("not both", output_of(result))
-        result = invoke(["config", "set", "claude-code-main", "--start", "14:38", "--next", "15:00"])
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("not both", output_of(result))
 
     def test_next_on_remote_hits_override_endpoint_not_push(self):
         data = write_config(plan_connection(mode="fixed", fixed_at=("16:00",)))
@@ -1557,6 +1622,26 @@ class StartTests(IsolatedTestCase):
         set_override.assert_called_once()
         self.assertIn("14:38", set_override.call_args[0][3])
         self.assertIsNone(set_override.call_args[0][4])
+        push.assert_not_called()
+
+    def test_move_slot_on_remote_passes_slot_and_day(self):
+        data = write_config(plan_connection(mode="fixed", fixed_at=("16:00",), days="weekday"))
+        data["connections"]["claude-code-main"]["location"] = "remote"
+        cfg.save_config(data)
+        with mock.patch("awewarm.cli.remote.remote_url", return_value="https://hub.example"), \
+             mock.patch("awewarm.cli.remote.load_token", return_value="awt_t"), \
+             mock.patch("awewarm.cli.remote.set_next_override") as set_override, \
+             mock.patch("awewarm.cli.remote.ensure_session", return_value={
+                 "connections": {"claude-code-main": {"state": {}}}
+             }), \
+             mock.patch("awewarm.cli._push_edits_to_remote") as push, \
+             mock.patch("awewarm.cli._now") as now:
+            now.return_value = datetime(2026, 8, 21, 18, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+            result = invoke(["config", "set", "claude-code-main", "--next", "23:00", "--move-slot"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        set_override.assert_called_once()
+        self.assertEqual(set_override.call_args[0][4], "16:00")
+        self.assertEqual(set_override.call_args[0][5], "2026-08-24")
         push.assert_not_called()
 
 

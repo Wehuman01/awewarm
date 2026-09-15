@@ -487,13 +487,17 @@ class WarmServer:
         )
         return result
 
-    def set_next_override(self, conn_id, at, slot=None):
+    def set_next_override(self, conn_id, at, slot=None, slot_day=None):
         """Pin or clear the one-shot next fire; never touches connection config.
 
         Unlike put_connection this leaves schedule memory (last activation,
         completed slots, health ladder) intact — the temporary pin is state,
         not a schedule rewrite. `slot` (HH:MM) marks the pin as a moved fixed
-        slot (`--start`); omit for a plain pin (`--next`).
+        slot (`--next --move-slot`) and must be one of that connection's
+        fixed times;
+        `slot_day` (YYYY-MM-DD) is that slot's own calendar day, so completion
+        lands on the day the slot lives even when the pin fires on another.
+        Omit both for a plain pin (`--next`).
         """
         with self.lock:
             conn = self.config["connections"].get(conn_id)
@@ -503,10 +507,28 @@ class WarmServer:
                 raise ApiError(400, "nextOverrideSlot must be an HH:MM string or null")
             if isinstance(slot, str) and not SLOT_RE.match(slot):
                 raise ApiError(400, "nextOverrideSlot must be HH:MM, e.g. 16:00")
+            sched = conn.get("schedule") or {}
+            fixed_at = (sched.get("fixed") or {}).get("at") or []
+            if slot is not None and (sched.get("mode") != "fixed" or slot not in fixed_at):
+                raise ApiError(
+                    400,
+                    "nextOverrideSlot must be one of this connection's fixed times: "
+                    + (", ".join(fixed_at) or "none configured"),
+                )
+            if slot_day is not None:
+                if slot is None:
+                    raise ApiError(400, "nextOverrideSlotDay requires nextOverrideSlot")
+                try:
+                    datetime.strptime(slot_day, "%Y-%m-%d")
+                except (TypeError, ValueError):
+                    raise ApiError(
+                        400, "nextOverrideSlotDay must be YYYY-MM-DD, e.g. 2026-09-21"
+                    )
             cs = conn_state(self.state, conn_id)
             if at is None:
                 cs["nextOverrideAt"] = None
                 cs["nextOverrideSlot"] = None
+                cs["nextOverrideSlotDay"] = None
             else:
                 moment = schedule.parse_ts(at)
                 if moment is None:
@@ -516,17 +538,19 @@ class WarmServer:
                     )
                 cs["nextOverrideAt"] = schedule.iso(moment)
                 cs["nextOverrideSlot"] = slot
+                cs["nextOverrideSlotDay"] = slot_day if slot is not None else None
             self._save(self.state_path, self.state)
             due_at, kind = schedule.next_due(conn, cs, self._now(conn))
             self.log(
                 f"{conn_id} next-override "
                 + ("cleared" if at is None else f"set to {cs['nextOverrideAt']}")
-                + (f" (slot {slot})" if slot else "")
+                + (f" (slot {slot} on {slot_day})" if slot and slot_day else (f" (slot {slot})" if slot else ""))
             )
             return {
                 "ok": True,
                 "nextOverrideAt": cs.get("nextOverrideAt"),
                 "nextOverrideSlot": cs.get("nextOverrideSlot"),
+                "nextOverrideSlotDay": cs.get("nextOverrideSlotDay"),
                 "nextDue": schedule.iso(due_at) if due_at else None,
                 "nextDueKind": kind,
             }
@@ -571,6 +595,7 @@ class WarmServer:
             schedule.record_success(
                 cs, conn, now, kind, slot, reset_due=reset_due,
                 slot_at=(node or {}).get("dueAt"),
+                slot_day=(node or {}).get("slotDay"),
             )
         else:
             schedule.record_failure(cs, conn, now, kind, result["detail"], node=node)
@@ -695,7 +720,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _set_override(self, warm, tenant, conn_id, body):
         return warm.set_next_override(
-            conn_id, body.get("nextOverrideAt"), body.get("nextOverrideSlot")
+            conn_id, body.get("nextOverrideAt"), body.get("nextOverrideSlot"),
+            body.get("nextOverrideSlotDay"),
         )
 
     # --- plumbing ---

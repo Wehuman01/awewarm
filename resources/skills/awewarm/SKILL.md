@@ -20,7 +20,7 @@ Every activation sends one REAL request against the user's coding-plan quota:
 | Category | Commands |
 |---|---|
 | Read-only — run freely | `awewarm status [<id>] [--remote|--local] [--json]`, `awewarm discover`, `awewarm config set <id>` (no flags = show settings), `awewarm config path`, `awewarm self-update --check` |
-| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--start/--window/--wake/--no-wake/--inherit-schedule`, `awewarm config proxy [<url>|none]` (egress proxy for awewarm's own requests and the CLI subprocesses it starts), `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm remote push [<id>]`, `awewarm scheduler install [--wake]`, `awewarm scheduler uninstall`, `awewarm self-update` |
+| Local changes — run on request | `awewarm config set <id> --times/--days/--mode/--on/--off/--anchor/--next/--move-slot/--window/--wake/--no-wake/--inherit-schedule`, `awewarm config proxy [<url>|none]` (egress proxy for awewarm's own requests and the CLI subprocesses it starts), `awewarm config remove <id>` (confirm first — deletes the stored API key), `awewarm remote push [<id>]`, `awewarm scheduler install [--wake]`, `awewarm scheduler uninstall`, `awewarm self-update` |
 | Delegation — changes who ticks a connection; confirm intent first | `awewarm remote connect <url> [--token]` (solo `awewarm serve`) or `awewarm remote connect <url> --invite awi_...` (hub `awewarm-hub serve`), `awewarm config set <id> --remote` (subscriptions and CLI accounts; pushes config+key/credential to the server), `awewarm config set <id> --local` (takeback: pulls server state), `awewarm remote disconnect` (refuses while delegations exist) |
 | Real requests — prompts by default; `--force` skips the prompt | `awewarm run [<id>] [--reset-due] [--force]`. Errors with a clear message if called from a non-tty without `--force`. On delegated connections it fires on the server. |
 | Scheduler-only — never call manually | `awewarm tick` (hidden). The background scheduler agent calls this once a minute. |
@@ -148,15 +148,15 @@ Tells awewarm when the current window closes; renewal starts right after it inst
 ### Move the next fire (both modes)
 
 ```bash
-awewarm config set <id> --start HH:MM     # move the original next slot/activation to this time
-awewarm config set <id> --next HH:MM      # plain one-shot pin (no slot identity)
-awewarm config set <id> --clear-next      # drop either pin
+awewarm config set <id> --next HH:MM              # one-shot pin: fire once at this time
+awewarm config set <id> --next HH:MM --move-slot  # fire the next pending fixed slot at this time
+awewarm config set <id> --clear-next              # drop the pin
 ```
 
-One state pin backs both verbs; setting one clears the other; first success clears it. Both work on delegated connections (state-only API).
+One state pin backs both forms; setting a new one replaces the old; first success clears it. Both work on delegated connections (state-only API).
 
-- `--start` on fixed names the next pending slot and fires *that slot* at T (times list untouched; slot marked completed). On interval it fires once at T, then the chain continues from that success.
-- `--next` fires once at T as `override` — can be earlier or later than the next slot.
+- `--next` fires once at T as `override` — can be earlier or later than the next slot. On interval the chain renews from that fire (defers a fresh connection's first anchor too).
+- `--next --move-slot` on fixed names the next pending slot and fires *that slot* at T (times list untouched; slot marked completed on its own day). Interval has no slot to move — plain `--next` already renews the chain.
 - `status` shows `Pinned: …` while armed.
 
 ### Enable RTC wake for lid-closed sleep

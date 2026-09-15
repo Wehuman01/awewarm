@@ -292,6 +292,48 @@ class ConnectionTests(ServerCase):
             )
         self.assertIn("HH:MM", str(ctx.exception))
 
+    def test_override_rejects_slot_not_in_fixed_times(self):
+        self.push_plan(fixed_at=("16:00",))
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.set_next_override(
+                self.url, self.token, "glm", schedule.iso(at("14:38")), "17:00"
+            )
+        self.assertIn("fixed times", str(ctx.exception))
+
+    def test_override_rejects_slot_on_interval_connection(self):
+        conn = plan_connection(
+            mode="interval", fixed_at=(), window_status="user-confirmed", duration=300
+        )
+        remote_client.push_connection(self.url, self.token, "glm", conn, "sk-test", TZ)
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.set_next_override(
+                self.url, self.token, "glm", schedule.iso(at("14:38")), "16:00"
+            )
+        self.assertIn("fixed times", str(ctx.exception))
+
+    def test_override_slot_day_roundtrip_and_validation(self):
+        self.push_plan(fixed_at=("16:00",))
+        now = datetime.now(ZoneInfo(TZ))
+        pin = now.replace(second=0, microsecond=0) + timedelta(minutes=30)
+        result = remote_client.set_next_override(
+            self.url, self.token, "glm", schedule.iso(pin), "16:00", "2026-09-21"
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["nextOverrideSlot"], "16:00")
+        self.assertEqual(result["nextOverrideSlotDay"], "2026-09-21")
+        entry = self.view()["connections"]["glm"]["state"]
+        self.assertEqual(entry["nextOverrideSlotDay"], "2026-09-21")
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.set_next_override(
+                self.url, self.token, "glm", schedule.iso(pin), "16:00", "09/21"
+            )
+        self.assertIn("YYYY-MM-DD", str(ctx.exception))
+        with self.assertRaises(remote_client.RemoteError) as ctx:
+            remote_client.set_next_override(
+                self.url, self.token, "glm", schedule.iso(pin), None, "2026-09-21"
+            )
+        self.assertIn("requires nextOverrideSlot", str(ctx.exception))
+
     def test_override_rejects_bad_timestamp(self):
         self.push_plan()
         with self.assertRaises(remote_client.RemoteError) as ctx:
