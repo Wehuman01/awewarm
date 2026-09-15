@@ -1601,15 +1601,18 @@ def _config_restore(backup_path, force, assume_yes):
 @click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON (still redacted).")
 @click.option("--remote/--local", "location", default=None,
               help="Show only delegated (--remote) or only locally scheduled (--local) connections.")
-def status_command(connection, as_json, location):
+@click.option("--all", "include_disabled", is_flag=True,
+              help="Include disabled connections in the listing (default: only enabled ones).")
+def status_command(connection, as_json, location, include_disabled):
     """Show connections and what fires next.
 
     \b
-      awewarm status               everything: local + delegated (server truth)
+      awewarm status               everything enabled: local + delegated (server truth)
+      awewarm status --all         also list disabled connections
       awewarm status --remote      delegated only, with the server health line
       awewarm status --local       locally scheduled only
     """
-    _show_status(connection, as_json, location)
+    _show_status(connection, as_json, location, include_disabled=include_disabled)
 
 
 @cli.command("tick", hidden=True)

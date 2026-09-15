@@ -485,7 +485,7 @@ class LadderStatusTests(IsolatedTestCase):
         cs = cfg.conn_state(state, "claude-code-main")
         cs["autoDisabledAt"] = "2026-08-19T22:00:00+08:00"
         cfg.save_state(state)
-        result = invoke(["status"])
+        result = invoke(["status", "--all"])
         self.assertIn("(claude-code-main) — disabled", result.output)
         self.assertNotIn("auto-disabled", result.output)
 
@@ -805,11 +805,14 @@ class LifecycleTests(IsolatedTestCase):
         result = invoke(["config", "set", "claude-code-main", "--off"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("disabled", result.output)
-        status = invoke(["status"])
-        self.assertIn("disabled", status.output)
+        listing = invoke(["status"])
+        self.assertNotIn("claude-code-main", listing.output)
+        detailed = invoke(["status", "claude-code-main"])
+        self.assertIn("disabled", detailed.output)
         resumed = invoke(["config", "set", "claude-code-main", "--on"])
         self.assertEqual(resumed.exit_code, 0)
         self.assertTrue(cfg.load_config()["connections"]["claude-code-main"]["enabled"])
+        self.assertIn("claude-code-main", invoke(["status"]).output)
 
     @mock.patch("awewarm.keystore.delete_api_key")
     def test_remove_deletes_everything(self, delete_api_key):
@@ -878,6 +881,57 @@ class HideTests(IsolatedTestCase):
         result = invoke(["status"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("--show", result.output)
+
+
+class DisabledListingTests(IsolatedTestCase):
+    """User-disabled connections are off the default listing, like hide."""
+
+    def _write_enabled_and_disabled(self):
+        data = cfg.empty_config()
+        off = account_connection(mode="fixed")
+        off["enabled"] = False
+        data["connections"]["claude-code-main"] = off
+        data["connections"]["glm-coding-plan"] = plan_connection(mode="fixed")
+        cfg.save_config(data)
+
+    def test_status_listing_omits_disabled(self):
+        self._write_enabled_and_disabled()
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertNotIn("claude-code-main", result.output)
+        self.assertIn("glm-coding-plan", result.output)
+
+    def test_status_all_includes_disabled(self):
+        self._write_enabled_and_disabled()
+        result = invoke(["status", "--all"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("(claude-code-main) — disabled", result.output)
+        self.assertIn("glm-coding-plan", result.output)
+
+    def test_status_single_ask_still_shows_disabled(self):
+        self._write_enabled_and_disabled()
+        result = invoke(["status", "claude-code-main"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("(claude-code-main) — disabled", result.output)
+
+    def test_status_json_listing_omits_disabled(self):
+        self._write_enabled_and_disabled()
+        result = invoke(["status", "--json"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        view = json.loads(result.output)
+        self.assertNotIn("claude-code-main", view["config"]["connections"])
+        self.assertIn("glm-coding-plan", view["config"]["connections"])
+
+    def test_all_disabled_listing_says_so(self):
+        data = cfg.empty_config()
+        conn = account_connection(mode="fixed")
+        conn["enabled"] = False
+        data["connections"]["claude-code-main"] = conn
+        cfg.save_config(data)
+        result = invoke(["status"])
+        self.assertEqual(result.exit_code, 0, output_of(result))
+        self.assertIn("--all", result.output)
+        self.assertIn("--on", result.output)
 
 
 class ApiKeySetTests(IsolatedTestCase):
@@ -1037,7 +1091,7 @@ class StatusTests(IsolatedTestCase):
         conn = account_connection(mode="fixed")
         conn["enabled"] = False
         write_config(conn)
-        result = invoke(["status"])
+        result = invoke(["status", "--all"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("(claude-code-main) — disabled", result.output)
         self.assertIn("Next due: none (disabled)", result.output)

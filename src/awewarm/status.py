@@ -118,9 +118,32 @@ def _fetch_remote_view(config, state):
         return None, f"server unreachable ({exc})"
 
 
-def _show_status(connection, as_json, location=None):
+def _no_visible_reason(config, include_disabled):
+    """One empty-listing message: why nothing is visible, and how to see it."""
+    if not config["connections"]:
+        return "No connections yet.\nrun: awewarm init\n or: awewarm config add"
+    unhidden = [c for c in config["connections"].values() if not c.get("hide")]
+    if unhidden and not include_disabled:
+        # Everything still on disk is user-disabled, not hide.
+        return (
+            "No enabled connections — every connection is disabled.\n"
+            "resume with: awewarm config set <id> --on\n"
+            "or list them: awewarm status --all"
+        )
+    return (
+        "No visible connections — all are hidden from status.\n"
+        "unhide with: awewarm config set <id> --show"
+    )
+
+
+def _show_status(connection, as_json, location=None, include_disabled=False):
     """Render status; `location` filters — True shows only delegated
-    connections, False only locally scheduled ones, None shows both."""
+    connections, False only locally scheduled ones, None shows both.
+
+    The listing skips `hide` connections and, unless `include_disabled`,
+    user-disabled ones (`enabled: false`). An explicit CONNECTION id always
+    shows that connection, hidden or disabled or not — same contract as hide.
+    """
     from . import cli
     config = load_config()
     if connection:
@@ -137,6 +160,7 @@ def _show_status(connection, as_json, location=None):
         conns = {
             cid: conn for cid, conn in config["connections"].items()
             if not conn.get("hide")
+            and (include_disabled or conn.get("enabled", True))
         }
         if location is not None:
             conns = {
@@ -179,20 +203,10 @@ def _show_status(connection, as_json, location=None):
         elif location is False:
             if any(c.get("location") == "remote" for c in config["connections"].values()):
                 click.echo("No local connections — every connection is delegated (view them: awewarm status --remote)")
-            elif config["connections"]:
-                click.echo(
-                    "No visible connections — all are hidden from status.\n"
-                    "unhide with: awewarm config set <id> --show"
-                )
             else:
-                click.echo("No connections yet.\nrun: awewarm init\n or: awewarm config add")
-        elif config["connections"]:
-            click.echo(
-                "No visible connections — all are hidden from status.\n"
-                "unhide with: awewarm config set <id> --show"
-            )
+                click.echo(_no_visible_reason(config, include_disabled))
         else:
-            click.echo("No connections yet.\nrun: awewarm init\n or: awewarm config add")
+            click.echo(_no_visible_reason(config, include_disabled))
         return
     now = cli._now(config)
     if location and remote_view:
