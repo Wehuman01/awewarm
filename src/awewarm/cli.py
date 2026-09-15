@@ -1604,7 +1604,7 @@ def _config_restore(backup_path, force, assume_yes):
 def status_command(connection, as_json, location):
     """Show connections and what fires next.
 
-    \\b
+    \b
       awewarm status               everything: local + delegated (server truth)
       awewarm status --remote      delegated only, with the server health line
       awewarm status --local       locally scheduled only
@@ -2030,14 +2030,14 @@ def serve_command(data_dir, bind, port, fixed_token, hub, tick_seconds):
     """Run the always-on server that ticks delegated connections.
 
     \b
-  awewarm serve                    # token claimed by the first remote connect
-  awewarm serve --token awt_...    # fixed token (RAM only)
-  awewarm serve --data-dir /data   # keep config/state/log in one place
+      awewarm serve                    # token claimed by the first remote connect
+      awewarm serve --token awt_...    # fixed token (RAM only)
+      awewarm serve --data-dir /data   # keep config/state/log in one place
 
-Expose it safely with a cloudflared tunnel (README → Remote server).
-Nothing secret is ever written to disk: API keys live in server RAM and are
-re-pushed by the local machine after a restart. Multi-tenant serving (one
-server, many invited users) is the separate awewarm-hub package.
+    Expose it safely with a cloudflared tunnel (README → Remote server).
+    Nothing secret is ever written to disk: API keys live in server RAM and are
+    re-pushed by the local machine after a restart. Multi-tenant serving (one
+    server, many invited users) is the separate awewarm-hub package.
     """
     if hub:
         die(
