@@ -269,11 +269,13 @@ class FixedTests(unittest.TestCase):
         self.assertEqual(moment, at(WEDNESDAY, "14:38"))
         self.assertEqual(kind, "override")
 
-    def test_next_override_past_moment_is_due_now(self):
+    def test_next_override_past_moment_shows_pin_time(self):
         conn_state = default_conn_state()
         conn_state["nextOverrideAt"] = schedule.iso(at(WEDNESDAY, "14:38"))
         moment, kind = schedule.next_due(account_connection(), conn_state, at(WEDNESDAY, "15:00"))
-        self.assertEqual(moment, at(WEDNESDAY, "15:00"))
+        # The pin's own moment is returned even when already past — status marks
+        # it "overdue" so the user can see how long the fire has been pending.
+        self.assertEqual(moment, at(WEDNESDAY, "14:38"))
         self.assertEqual(kind, "override")
 
     def test_next_override_throttles_after_failure(self):

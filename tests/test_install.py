@@ -621,5 +621,107 @@ class WindowsImportTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
+class SchedulerEnvDriftTests(IsolatedTestCase):
+    """scheduler_env_drift() reports when the installed job's AWEWARM_* env
+    differs from what this CLI is currently reading."""
+
+    def _write_plist_env(self, env_vars):
+        install.plist_path().parent.mkdir(parents=True, exist_ok=True)
+        data = install.build_plist("/usr/local/bin/awewarm")
+        data["EnvironmentVariables"] = env_vars
+        with open(install.plist_path(), "wb") as handle:
+            plistlib.dump(data, handle)
+
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    def test_no_drift_when_values_match(self):
+        # The plist carries the same paths the isolated test env uses
+        self._write_plist_env({
+            "AWEWARM_CONFIG": str(self.tmp_path / "config.json"),
+            "AWEWARM_STATE": str(self.tmp_path / "state.json"),
+            "AWEWARM_LOG": str(self.tmp_path / "awewarm.log"),
+        })
+        self.assertEqual(install.scheduler_env_drift(), [])
+
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    def test_drift_reported_when_baked_path_differs(self):
+        sandbox = str(self.tmp_path / "sandbox" / "config.json")
+        self._write_plist_env({"AWEWARM_CONFIG": sandbox})
+        drift = install.scheduler_env_drift()
+        self.assertEqual(len(drift), 1)
+        key, baked, effective = drift[0]
+        self.assertEqual(key, "AWEWARM_CONFIG")
+        self.assertEqual(baked, sandbox)
+        self.assertEqual(effective, str(cfg.config_path()))
+
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    def test_multiple_drifted_keys_all_reported(self):
+        sandbox_config = str(self.tmp_path / "sandbox" / "config.json")
+        sandbox_state = str(self.tmp_path / "sandbox" / "state.json")
+        self._write_plist_env({
+            "AWEWARM_CONFIG": sandbox_config,
+            "AWEWARM_STATE": sandbox_state,
+        })
+        keys = [k for k, _b, _e in install.scheduler_env_drift()]
+        self.assertEqual(sorted(keys), ["AWEWARM_CONFIG", "AWEWARM_STATE"])
+
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    def test_empty_when_plist_absent(self):
+        self.assertFalse(install.plist_path().exists())
+        self.assertEqual(install.scheduler_env_drift(), [])
+
+    @mock.patch("awewarm.install.sys.platform", "linux")
+    def test_linux_reads_env_from_service_unit(self):
+        install.service_path().parent.mkdir(parents=True, exist_ok=True)
+        install.service_path().write_text(
+            'Environment="AWEWARM_CONFIG=/old/config.json"\n'
+            'Environment="AWEWARM_STATE=/old/state.json"\n'
+        )
+        drift = install.scheduler_env_drift()
+        self.assertEqual(len(drift), 2)
+        keys = [k for k, _b, _e in drift]
+        self.assertIn("AWEWARM_CONFIG", keys)
+        self.assertIn("AWEWARM_STATE", keys)
+
+
+class SudoCmdCallerTests(IsolatedTestCase):
+    """_sudo_cmd now returns (ok, stderr); callers must index [0] for bool."""
+
+    def test_install_wake_grant_dies_with_tty_hint_on_sudo_password_error(self):
+        # visudo fails because sudo cannot prompt for a password (non-tty env)
+        with mock.patch("awewarm.install._sudo_cmd", return_value=(False, "sudo: a password is required")):
+            with self.assertRaises(SystemExit) as ctx:
+                install.install_wake_grant()
+        self.assertIn("interactive", str(ctx.exception))
+
+    def test_install_wake_grant_dies_with_tty_hint_on_no_askpass(self):
+        with mock.patch("awewarm.install._sudo_cmd", return_value=(False, "sudo: no askpass")):
+            with self.assertRaises(SystemExit) as ctx:
+                install.install_wake_grant()
+        self.assertIn("interactive", str(ctx.exception))
+
+    def test_install_wake_grant_dies_with_tty_hint_on_no_terminal(self):
+        with mock.patch("awewarm.install._sudo_cmd", return_value=(False, "sudo: a terminal is required")):
+            with self.assertRaises(SystemExit) as ctx:
+                install.install_wake_grant()
+        self.assertIn("interactive", str(ctx.exception))
+
+    def test_install_wake_grant_dies_with_stderr_on_other_visudo_error(self):
+        with mock.patch("awewarm.install._sudo_cmd", return_value=(False, "visudo: syntax error in line 1")):
+            with self.assertRaises(SystemExit) as ctx:
+                install.install_wake_grant()
+        msg = str(ctx.exception)
+        self.assertIn("visudo rejected", msg)
+        self.assertIn("syntax error", msg)
+
+    @mock.patch("awewarm.install.sys.platform", "darwin")
+    def test_uninstall_wake_grant_returns_bool(self):
+        with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
+             mock.patch("awewarm.install._sudo_cmd", return_value=(True, "")):
+            self.assertTrue(install.uninstall_wake_grant())
+        with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
+             mock.patch("awewarm.install._sudo_cmd", return_value=(False, "denied")):
+            self.assertFalse(install.uninstall_wake_grant())
+
+
 if __name__ == "__main__":
     unittest.main()

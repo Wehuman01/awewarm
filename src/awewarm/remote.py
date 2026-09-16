@@ -115,6 +115,8 @@ def _request(url, method, path, body=None, token=None, timeout=TIMEOUT_SECONDS, 
             # Cloudflare Bot Fight Mode answers with a bare "error code: 1010"
             # plain-text body — point at the proxy, not the awewarm server.
             message += " — a proxy or WAF (e.g. Cloudflare bot protection) in front of the server may be blocking this client"
+        if exc.code == 404 and "no such endpoint" in detail:
+            message += " — the server's awewarm engine is older than this CLI and lacks the endpoint; upgrade awewarm on the server and restart serve"
         raise RemoteError(message)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", None) or exc

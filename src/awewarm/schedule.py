@@ -614,9 +614,11 @@ def next_due(connection, conn_state, now):
         return None, None
     override = parse_ts(conn_state.get("nextOverrideAt"))
     if override is not None:
-        moment = override if override > now else now
+        # The pin's own moment, even when already past — status marks it
+        # overdue; clamping to `now` made the display chase the wall clock
+        # and hid how long the fire has been pending.
         kind = "fixed (moved)" if conn_state.get("nextOverrideSlot") else "override"
-        return moment, kind
+        return override, kind
     mode = connection["schedule"]["mode"]
     candidates = []
     if mode == "fixed":

@@ -187,6 +187,29 @@ class ImpostorTests(IsolatedTestCase):
         self.assertIn("HTTP 403", str(ctx.exception))
         self.assertIn("proxy or WAF", str(ctx.exception))
 
+    def test_404_no_such_endpoint_hints_at_outdated_server(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b'{"error": "no such endpoint"}'
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = start_http_server(httpd)
+        self.addCleanup(stop_http_server, httpd, thread)
+        url = f"http://127.0.0.1:{httpd.server_address[1]}"
+        with self.assertRaises(remote.RemoteError) as ctx:
+            remote.healthz(url)
+        self.assertIn("HTTP 404", str(ctx.exception))
+        self.assertIn("no such endpoint", str(ctx.exception))
+        self.assertIn("upgrade awewarm", str(ctx.exception))
+
 
 class SessionTests(LiveServerCase):
     def test_ensure_session_returns_view(self):

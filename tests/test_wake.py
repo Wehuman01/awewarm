@@ -314,7 +314,7 @@ class SudoersTests(IsolatedTestCase):
         )
 
     def test_install_validates_then_places_the_file(self):
-        with mock.patch("awewarm.install._sudo_cmd", return_value=True) as sudo:
+        with mock.patch("awewarm.install._sudo_cmd", return_value=(True, "")) as sudo:
             self.assertTrue(install.install_wake_grant())
             argvs = [call.args[0] for call in sudo.call_args_list]
             self.assertIn("visudo", argvs[0])
@@ -326,13 +326,13 @@ class SudoersTests(IsolatedTestCase):
             self.assertEqual(place[-1], str(install.SUDOERS_PATH))
 
     def test_install_dies_when_visudo_rejects(self):
-        with mock.patch("awewarm.install._sudo_cmd", return_value=False):
+        with mock.patch("awewarm.install._sudo_cmd", return_value=(False, "visudo: syntax error")):
             with self.assertRaises(SystemExit):
                 install.install_wake_grant()
 
     def test_uninstall_removes_the_file(self):
         with mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
-             mock.patch("awewarm.install._sudo_cmd", return_value=True) as sudo:
+             mock.patch("awewarm.install._sudo_cmd", return_value=(True, "")) as sudo:
             self.assertTrue(install.uninstall_wake_grant())
             self.assertEqual(
                 sudo.call_args.args[0], ["rm", "-f", str(install.SUDOERS_PATH)]
@@ -356,7 +356,7 @@ class TeardownTests(IsolatedTestCase):
         with mock.patch("awewarm.install._sudo_pmset", return_value=True) as sudo, \
              mock.patch("awewarm.install._live_wake_entries", return_value=set()), \
              mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
-             mock.patch("awewarm.install._sudo_cmd", return_value=True):
+             mock.patch("awewarm.install._sudo_cmd", return_value=(True, "")):
             self.assertEqual(install.teardown_wake_layer(), (1, 1, True))
             self.assertEqual(
                 sudo.call_args.args[0],
@@ -382,7 +382,7 @@ class TeardownTests(IsolatedTestCase):
                  ("08/23/2026 07:00:00", "wakeorpoweron", "pmset"),
              }), \
              mock.patch("awewarm.install.wake_grant_installed", return_value=True), \
-             mock.patch("awewarm.install._sudo_cmd", return_value=True):
+             mock.patch("awewarm.install._sudo_cmd", return_value=(True, "")):
             self.assertEqual(install.teardown_wake_layer(), (2, 2, True))
             cancels = [call.args[0] for call in sudo.call_args_list]
             self.assertIn(["schedule", "cancel", "wakeorpoweron", "08/23/26 07:00:00"], cancels)

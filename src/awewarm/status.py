@@ -99,7 +99,9 @@ def _status_block(conn_id, conn, state, now, detailed, where=None):
         click.echo("  Next due: none (auto-disabled)")
         return
     due_at, due_kind = schedule.next_due(conn, cs, now)
-    click.echo(f"  Next due: {cli._fmt_moment(due_at, now)}" + (f" ({due_kind})" if due_at else ""))
+    if due_at is not None:
+        overdue = "; overdue — catch-up will fire it" if due_at < now else ""
+        click.echo(f"  Next due: {cli._fmt_moment(due_at, now)} ({due_kind}{overdue})")
 
 
 def _fetch_remote_view(config, state):
@@ -296,6 +298,16 @@ def _show_status(connection, as_json, location=None, include_disabled=False):
             continue
         _status_block(conn_id, conn, state, now, detailed=bool(connection))
     footer = f"\nScheduler: {'enabled' if install.scheduler_installed() else 'not installed — run: awewarm scheduler install'}"
+    if install.scheduler_installed():
+        drift = install.scheduler_env_drift()
+        if drift:
+            parts = [f"{k}={baked}" for k, baked, _effective in drift]
+            footer += (
+                f"\n⚠ scheduler ticks a different config: "
+                + ", ".join(parts)
+                + f" (this CLI uses {install.config_path()})"
+                + " — fix: unset AWEWARM_*, then: awewarm scheduler install"
+            )
     if sys.platform == "darwin":
         if install.wake_grant_installed():
             moments = install.armed_wake_moments(state)

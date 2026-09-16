@@ -1723,6 +1723,20 @@ def _stdin_is_interactive():
     return sys.stdin.isatty()
 
 
+def _baked_env_note():
+    """Echo a note when AWEWARM_* env vars are set in the current shell — the
+    installed scheduler baked those in, so unsetting them before re-install
+    keeps the job bound to the real config, not a throwaway sandbox."""
+    keys = [k for k in ("AWEWARM_CONFIG", "AWEWARM_STATE", "AWEWARM_LOG") if os.environ.get(k)]
+    if not keys:
+        return
+    lines = [f"note: {k}={os.environ[k]}" for k in keys]
+    lines.append("if these are temporary sandbox values, unset them then re-run:")
+    lines.append("  unset AWEWARM_CONFIG AWEWARM_STATE AWEWARM_LOG")
+    lines.append("  awewarm scheduler install")
+    click.echo("\n".join(lines))
+
+
 def _scheduler_install(wake=False):
     local = [
         cid for cid, conn in load_config()["connections"].items()
@@ -1744,6 +1758,7 @@ def _scheduler_install(wake=False):
             return
     target = install.install_scheduler()
     click.echo(f"✓ Scheduler installed: {target}")
+    _baked_env_note()
     entries = install.calendar_entries(load_config())
     if sys.platform == "darwin":
         if entries:

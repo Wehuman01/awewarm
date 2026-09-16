@@ -36,6 +36,7 @@ from . import schedule
 from .config import (
     SLOT_RE,
     append_log,
+    config_path,
     conn_state,
     connection_errors,
     die,
@@ -153,6 +154,54 @@ def scheduler_installed():
     if sys.platform.startswith("linux"):
         return timer_path().exists()
     return False
+
+
+# Data-path overrides baked into an installed job matter more than the job's
+# existence: a job bound to a throwaway AWEWARM_CONFIG keeps "ticking" a
+# sandbox forever while the real config's pins silently rot. Windows needs no
+# check — its tasks inherit the user environment, nothing is baked.
+_ENV_PATH_KEYS = ("AWEWARM_CONFIG", "AWEWARM_STATE", "AWEWARM_LOG")
+
+
+def _installed_job_env():
+    """AWEWARM_* data-path vars baked into the installed job; None when the
+    job cannot be read."""
+    try:
+        if sys.platform == "darwin":
+            with open(plist_path(), "rb") as handle:
+                data = plistlib.load(handle)
+            env = data.get("EnvironmentVariables") or {}
+            return {key: env[key] for key in _ENV_PATH_KEYS if env.get(key)}
+        if sys.platform.startswith("linux"):
+            baked = {}
+            for line in service_path().read_text().splitlines():
+                match = re.match(r'Environment="([^=]+)=(.*)"$', line.strip())
+                if match and match.group(1) in _ENV_PATH_KEYS:
+                    baked[match.group(1)] = match.group(2)
+            return baked
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+    return {}
+
+
+def scheduler_env_drift():
+    """(key, baked, effective) triples where the installed job's baked data
+    path differs from what this CLI reads — the scheduler ticks a different
+    config/state than the user is looking at. Empty when coherent (or when
+    the job cannot be read; presence is status's to report)."""
+    baked = _installed_job_env()
+    if not baked:
+        return []
+    effective = {
+        "AWEWARM_CONFIG": config_path(),
+        "AWEWARM_STATE": state_path(),
+        "AWEWARM_LOG": log_path(),
+    }
+    drift = []
+    for key in _ENV_PATH_KEYS:
+        if key in baked and baked[key] != str(effective[key]):
+            drift.append((key, baked[key], str(effective[key])))
+    return drift
 
 
 def _maybe_self_heal_job(config=None):
@@ -342,19 +391,22 @@ def refresh_wake(config):
 
 def _sudo_cmd(argv, interactive=True):
     """Run argv with sudo; -n first so scripted calls fail fast instead of
-    hanging, plain sudo second so interactive calls can prompt."""
+    hanging, plain sudo second so interactive calls can prompt.
+    Returns (ok, stderr) — the stderr of the last attempt, for messages."""
     prefixes = (["sudo", "-n"], ["sudo"]) if interactive else (["sudo", "-n"],)
+    stderr = ""
     for prefix in prefixes:
         result = subprocess.run(
             [*prefix, *argv], capture_output=True, text=True, timeout=60
         )
+        stderr = (result.stderr or "").strip()
         if result.returncode == 0:
-            return True
-    return False
+            return True, ""
+    return False, stderr
 
 
 def _sudo_pmset(args, interactive=True):
-    return _sudo_cmd([PMSET_BIN, *args], interactive=interactive)
+    return _sudo_cmd([PMSET_BIN, *args], interactive=interactive)[0]
 
 
 def _current_repeat_line():
@@ -709,14 +761,27 @@ def install_wake_grant():
         with handle:
             handle.write(sudoers_rule(user))
         os.chmod(staged, 0o600)
-        if not _sudo_cmd(["visudo", "-cf", str(staged)]):
-            die("visudo rejected the wake rule — this should not happen; please report it")
+        ok, stderr = _sudo_cmd(["visudo", "-cf", str(staged)])
+        if not ok:
+            lower = stderr.lower()
+            if any(s in lower for s in ("a password is required", "no askpass", "a terminal")):
+                die(
+                    "visudo could not validate the wake rule: sudo needs an interactive "
+                    "terminal for the password prompt\n"
+                    "fix: run from an interactive shell:\n"
+                    "  awewarm scheduler install --wake"
+                )
+            die(
+                "visudo rejected the wake rule\n"
+                f"{(stderr or '').strip()}\n"
+                "fix: resolve the visudo error above, then retry: awewarm scheduler install --wake"
+            )
         if not _sudo_cmd(
             [
                 "install", "-m", "0440", "-o", "root", "-g", "wheel",
                 str(staged), str(SUDOERS_PATH),
             ]
-        ):
+        )[0]:
             die(
                 "could not write /etc/sudoers.d/awewarm\n"
                 "fix: resolve the sudo error; wakes can also be armed per slot with:\n"
@@ -730,7 +795,7 @@ def install_wake_grant():
 def uninstall_wake_grant(interactive=True):
     if not wake_grant_installed():
         return False
-    return _sudo_cmd(["rm", "-f", str(SUDOERS_PATH)], interactive=interactive)
+    return _sudo_cmd(["rm", "-f", str(SUDOERS_PATH)], interactive=interactive)[0]
 
 
 def teardown_wake_layer(interactive=True):
