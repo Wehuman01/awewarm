@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.2
+
+**`status` now surfaces a scheduler ticking the wrong config, and an overdue pin shows its true moment instead of chasing the clock.** The scheduler trusts what its launchd job was given at install time, not what the CLI reads now — and a sandboxed install had been baking throwaway `AWEWARM_*` paths into the plist, so the tick purred over a /tmp config forever while `status` happily reported it enabled:
+
+- **Scheduler env drift is visible.** `status` compares the installed launchd job's `AWEWARM_CONFIG`/`AWEWARM_STATE`/`AWEWARM_LOG` against the effective paths this CLI reads. A mismatch prints a `⚠ scheduler ticks a different config` block naming the offending variables and the fix (`unset AWEWARM_*`, then `awewarm scheduler install`), instead of a silently correct-looking `Scheduler: enabled`. The same detection is exported for scripts (`scheduler_env_drift`).
+- **Interactive install shows what it bakes.** `scheduler install` echoes the exact union of env (including any `AWEWARM_*` in the parent environment) it writes into the launchd job, so a stray variable is called out at install time rather than found out during an outage.
+- **An overdue pin displays its own moment.** `--next HH:MM --move-slot` pins to a specific time; when that time has already passed, `status`'s `Next due` shows the pinned moment with an `— overdue; catch-up will fire it` suffix rather than a rolling "now" that implied the pin had lost its meaning. The scheduler still fires it the first moment it can.
+- **A server that predates the override endpoint says so.** `awewarm ... --remote` against a hub whose engine is older than the pin endpoint answered a bare 404. `POST` responses carrying "no such endpoint" now add: the server's engine is older than this CLI, so upgrade `awewarm` on the server and restart serve — instead of leaving the operator hunting for a phantom route.
+- **wake-grant installs stop misattributing sudo stalls.** A failed `sudo` when noninteractive used to be flagged under a generic message; the wake layer now reports the actual cause — the sudo prompt couldn't be answered without a tty — as part of `scheduler`/`wake` install.
+
 ## v0.6.9
 
 **One-shot pins for the next fire — one verb now, `--next`, local and delegated.** Temporary next-due edits used to mean either the `--start` gate (`deferUntil`, delay-only, refused for remote) or permanently rewriting `--times` — a full connection re-push that also wiped last activation and completed slots on the server. Both needs now share one state pin (`nextOverrideAt` + optional `nextOverrideSlot`):
