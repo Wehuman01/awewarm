@@ -1,6 +1,6 @@
 <div align="center">
   <img src="logo/hero2.webp" alt="awewarm" width="860">
-  <h1>awewarm: Subscription Window Warmer <a href="https://github.com/Webioinfo01/aweskill"><img src="https://raw.githubusercontent.com/Webioinfo01/aweskill/main/logo/aweskill-badge2.svg" alt="aweskill companion"></a></h1>
+  <h1>awewarm: Subscription Window Warmer <a href="https://github.com/wehuman01/aweskill"><img src="https://raw.githubusercontent.com/wehuman01/aweskill/main/logo/aweskill-badge2.svg" alt="aweskill companion"></a></h1>
   <p><strong>Keep AI coding-plan windows warm with one minimal request.</strong></p>
   <p>Connect once; awewarm detects what your Claude Code / Codex account or subscription endpoint can do, then makes sure the next usage window is always already open.</p>
   <p>
@@ -143,11 +143,11 @@ The agent can inspect `discover`, `status`, and the redacted config paths, then 
 
 awewarm is part of a small tool family for AI coding agents:
 
-- **[awewarm-hub](https://github.com/Webioinfo01/awewarm-hub)** — the multi-tenant companion server: one always-on box keeps a whole team's windows warm through one-time invites. Same org, same MPL-2.0; its engine is this package, pinned to its minor version.
-- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — agent profile switcher for Claude Code, Codex, and OpenCode. aweswitch manages which provider a session launches with; awewarm keeps that provider's subscription window open underneath.
+- **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** — the multi-tenant companion server: one always-on box keeps a whole team's windows warm through one-time invites. Same org, same MPL-2.0; its engine is this package, pinned to its minor version.
+- **[aweswitch](https://github.com/wehuman01/aweswitch)** — agent profile switcher for Claude Code, Codex, and OpenCode. aweswitch manages which provider a session launches with; awewarm keeps that provider's subscription window open underneath.
 - **[aweskill](https://aweskill.webioinfo.top/)** — CLI skill package manager for AI agents (47+ agents).
-- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — session bookmark manager for Claude Code and Codex.
-- **[awerouter](https://github.com/mugpeng/awerouter)** — smart LLM router: flash/pro split by structural signals.
+- **[aweshelf](https://github.com/wehuman01/aweshelf)** — session bookmark manager for Claude Code and Codex.
+- **[awerouter](https://github.com/wehuman01/awerouter)** — smart LLM router: flash/pro split by structural signals.
 
 ## Scheduling Modes
 
@@ -431,7 +431,7 @@ Users never hand-edit config; `init` / `config add` generate it at `~/.config/aw
 }
 ```
 
-A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. An account connection may also carry `authHome` — the CLI config dir it logs in from (an [aweswitch](https://github.com/Webioinfo01/aweswitch) account dir); see [Multiple logins of one provider](#multiple-logins-of-one-provider--authhome). A connection nested under `connections.remote` is ticked by the paired `awewarm serve` server (whose URL and token ref live in the top-level `remote` block); the group alone says so — no per-connection location field. The window duration (`windowMinutes`) is a schedule field inherited through the layers (below); a confirmed window unlocks interval renewal — it only takes effect while the schedule mode is interval, fixed connections merely record it. `"hide": true` keeps a connection out of `status` listings — it still warms on its schedule, and `status <id>` still shows it.
+A connection with `url` + `apiKey` is a subscription; one with `cli` is a local account. `apiKey` is `file:<id>` — the pasted key lives in `~/.config/awewarm/secrets.json` (chmod 600), readable by the background scheduler. An account connection may also carry `authHome` — the CLI config dir it logs in from (an [aweswitch](https://github.com/wehuman01/aweswitch) account dir); see [Multiple logins of one provider](#multiple-logins-of-one-provider--authhome). A connection nested under `connections.remote` is ticked by the paired `awewarm serve` server (whose URL and token ref live in the top-level `remote` block); the group alone says so — no per-connection location field. The window duration (`windowMinutes`) is a schedule field inherited through the layers (below); a confirmed window unlocks interval renewal — it only takes effect while the schedule mode is interval, fixed connections merely record it. `"hide": true` keeps a connection out of `status` listings — it still warms on its schedule, and `status <id>` still shows it.
 
 Settings are layered three deep — every level carries the same knobs and a `schedule` block, and each field resolves through them. The split is semantic: the `schedule` block answers when a connection fires (`mode`, `times`, `days`, `skipIfActivatedMinutes`, `windowMinutes`, `graceSeconds`, `jitterSeconds`); the knobs answer how an activation behaves — `catchupMinutes`/`catchupAttempts`/`degradeAfterNodes` (catch-up and the degrade ladder), `wakeWhenAsleep` (may fixed slots wake a sleeping machine), and `prompt`/`maxTokens` (the warm-up request's prompt and token cap). Setting `windowMinutes` on a layer vouches for that duration for every connection under it without its own record, unlocking interval; a CLI account's builtin window is never overridden by a layer:
 
@@ -455,7 +455,7 @@ One switch, one route: the configured `proxyUrl` carries awewarm's own requests,
 
 ### Multiple logins of one provider — authHome
 
-Several Claude Code or Codex logins can warm side by side, each on its own schedule. Official accounts managed by [aweswitch](https://github.com/Webioinfo01/aweswitch) (each lives in a private CLI config dir under `~/.config/aweswitch/accounts/<provider>/<name>/`) show up in `awewarm discover`, `awewarm config add`, and `awewarm init` as their own entries — `Codex (cxo-heck)`, `Codex (cxo-peng)`, `Claude Code (work)` — one per account dir that holds a login file. Adding one stores that dir on the connection as `authHome`, and from then on:
+Several Claude Code or Codex logins can warm side by side, each on its own schedule. Official accounts managed by [aweswitch](https://github.com/wehuman01/aweswitch) (each lives in a private CLI config dir under `~/.config/aweswitch/accounts/<provider>/<name>/`) show up in `awewarm discover`, `awewarm config add`, and `awewarm init` as their own entries — `Codex (cxo-heck)`, `Codex (cxo-peng)`, `Claude Code (work)` — one per account dir that holds a login file. Adding one stores that dir on the connection as `authHome`, and from then on:
 
 - **locally**, the CLI subprocess is pointed at the dir: codex gets `CODEX_HOME`, claude gets `CLAUDE_CONFIG_DIR` plus `CLAUDE_CODE_DONT_USE_KEYCHAIN=1` (the flag makes Claude Code read the dir's file-based login instead of the machine-wide Keychain — the same env aweswitch itself launches with). Each connection fires as its own account;
 - **delegated**, the login is read from that dir for the push, and the background sync's fingerprint-drift re-push stays per connection — each account rotates independently. The server side is unchanged: its per-connection sandbox (or native fire) already keys off the pushed credential.
@@ -545,12 +545,12 @@ awewarm is part of a growing family of "awesome" tools — CLI-first, local-firs
 ### CLI Tools
 
 - **[aweskill](https://aweskill.webioinfo.top/)** — CLI-first skill package manager supporting 47+ AI coding agents.
-- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Agent profile switcher for Claude Code, Codex, and OpenCode.
-- **[awerouter](https://github.com/mugpeng/awerouter)** — Smart router that splits requests between Flash and Pro models using structural signals, cutting unnecessary model spend.
-- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — Bookmark, categorize, and restore AI coding sessions; pairs with aweswitch to save profiles and launch with one command.
+- **[aweswitch](https://github.com/wehuman01/aweswitch)** — Agent profile switcher for Claude Code, Codex, and OpenCode.
+- **[awerouter](https://github.com/wehuman01/awerouter)** — Smart router that splits requests between Flash and Pro models using structural signals, cutting unnecessary model spend.
+- **[aweshelf](https://github.com/wehuman01/aweshelf)** — Bookmark, categorize, and restore AI coding sessions; pairs with aweswitch to save profiles and launch with one command.
 - **[aweshare](https://github.com/wehuman01/aweshare)** — Share local Ollama/vLLM backends, domestic coding plans, or authorized OpenAI/Anthropic subscriptions through a self-hosted hub — a sharing economy for tokens.
 - **[awewarm](https://github.com/wehuman01/awewarm)** — Subscription window warmer that keeps AI coding-plan windows active, for local setups and through a remote hub server.
-- **[awescholar](https://github.com/Webioinfo01/awescholar)** — AI-agent-operable scientific literature discovery and curation.
+- **[awescholar](https://github.com/wehuman01/awescholar)** — AI-agent-operable scientific literature discovery and curation.
 
 ### Desktop Apps
 

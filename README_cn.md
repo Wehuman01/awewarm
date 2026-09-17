@@ -1,6 +1,6 @@
 <div align="center">
   <img src="logo/hero2.webp" alt="awewarm" width="860">
-  <h1>awewarm：订阅窗口保温器 <a href="https://github.com/Webioinfo01/aweskill"><img src="https://raw.githubusercontent.com/Webioinfo01/aweskill/main/logo/aweskill-badge2.svg" alt="aweskill companion"></a></h1>
+  <h1>awewarm：订阅窗口保温器 <a href="https://github.com/wehuman01/aweskill"><img src="https://raw.githubusercontent.com/wehuman01/aweskill/main/logo/aweskill-badge2.svg" alt="aweskill companion"></a></h1>
   <p><strong>用一条最小请求，让 AI 编程套餐的窗口一直是热的。</strong></p>
   <p>接入一次；awewarm 自动检测你的 Claude Code / Codex 账号或订阅 endpoint 的能力，然后确保下一个用量窗口永远是已开启状态。</p>
   <p>
@@ -144,10 +144,10 @@ Agent 可以检查 `discover`、`status` 和脱敏后的配置路径，然后建
 awewarm 是一组面向 AI 编程 agent 的工具的一部分：
 
 - **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** — 多租户配套服务器：一台常在线的机器通过一次性邀请，为整个团队保持窗口温热。同属 wehuman01，使用 MPL-2.0；底层引擎固定到本包的小版本。
-- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Claude Code、Codex 和 OpenCode 的 agent profile 切换器。aweswitch 管理会话使用哪个 provider，awewarm 在下面保持该订阅窗口活跃。
+- **[aweswitch](https://github.com/wehuman01/aweswitch)** — Claude Code、Codex 和 OpenCode 的 agent profile 切换器。aweswitch 管理会话使用哪个 provider，awewarm 在下面保持该订阅窗口活跃。
 - **[aweskill](https://aweskill.webioinfo.top/)** — 面向 AI agent 的 CLI skill 包管理器（支持 47+ agent）。
-- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — Claude Code 和 Codex 的会话收藏管理器。
-- **[awerouter](https://github.com/mugpeng/awerouter)** — 智能 LLM 路由器：按结构信号切分 flash/pro。
+- **[aweshelf](https://github.com/wehuman01/aweshelf)** — Claude Code 和 Codex 的会话收藏管理器。
+- **[awerouter](https://github.com/wehuman01/awerouter)** — 智能 LLM 路由器：按结构信号切分 flash/pro。
 
 ## 调度模式
 
@@ -431,7 +431,7 @@ awewarm config restore /safe/path.tar.gz          # 在新机器上执行；目�
 }
 ```
 
-有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。本机账号还可以带 `authHome` —— 该连接登录所用的 CLI 配置目录（[aweswitch](https://github.com/Webioinfo01/aweswitch) 的账号目录），见[同一供应商的多个登录](#同一供应商的多个登录--authhome)。嵌套在 `connections.remote` 分组下的连接由已配对的 `awewarm serve` 服务器调度（服务器地址和 token 引用存于顶层 `remote` 块）——分组本身就是标记，连接上不再有 location 字段。窗口时长（`windowMinutes`）是 schedule 字段、按层继承（见下），存在已确认的窗口即解锁 interval 续期——它只在 interval 模式下生效，fixed 连接仅作记录。`"hide": true` 让该连接不出现在 `status` 列表中——保温照常进行，`status <id>` 单独查询仍会显示。
+有 `url` + `apiKey` 的是订阅连接，有 `cli` 的是本机账号。`apiKey` 为 `file:<id>`（粘贴的 key 存于 `~/.config/awewarm/secrets.json`，权限 600）。本机账号还可以带 `authHome` —— 该连接登录所用的 CLI 配置目录（[aweswitch](https://github.com/wehuman01/aweswitch) 的账号目录），见[同一供应商的多个登录](#同一供应商的多个登录--authhome)。嵌套在 `connections.remote` 分组下的连接由已配对的 `awewarm serve` 服务器调度（服务器地址和 token 引用存于顶层 `remote` 块）——分组本身就是标记，连接上不再有 location 字段。窗口时长（`windowMinutes`）是 schedule 字段、按层继承（见下），存在已确认的窗口即解锁 interval 续期——它只在 interval 模式下生效，fixed 连接仅作记录。`"hide": true` 让该连接不出现在 `status` 列表中——保温照常进行，`status <id>` 单独查询仍会显示。
 
 settings 分三层，每层都是同样的 knobs + 一个 `schedule` 块，每个字段按层解析。分组按语义划分：`schedule` 块回答"什么时候触发"（`mode`、`times`、`days`、`skipIfActivatedMinutes`、`windowMinutes`、`graceSeconds`、`jitterSeconds`）；knobs 回答"一次激活怎么执行"——`catchupMinutes`/`catchupAttempts`/`degradeAfterNodes`（补跑与降级）、`wakeWhenAsleep`（fixed 时间点可否唤醒睡眠中的机器）、`prompt`/`maxTokens`（保温请求的提示词与 token 上限）。某层设了 `windowMinutes`，等于为该层下所有没有自己记录的连接担保窗口并解锁 interval；CLI 账号的 builtin 窗口不受层值覆盖：
 
@@ -455,7 +455,7 @@ awewarm config proxy none                    # 恢复直连
 
 ### 同一供应商的多个登录 —— authHome
 
-同一个 Claude Code 或 Codex 的多个登录可以并排保温，各自有各自的时刻表。[aweswitch](https://github.com/Webioinfo01/aweswitch) 管理的官方账号（每个都在 `~/.config/aweswitch/accounts/<provider>/<name>/` 下有自己的私有 CLI 配置目录）会在 `awewarm discover`、`awewarm config add` 和 `awewarm init` 里作为独立条目出现——`Codex (cxo-heck)`、`Codex (cxo-peng)`、`Claude Code (work)`——每个存有登录文件的账号目录一条。添加时该目录会作为 `authHome` 写进连接，此后：
+同一个 Claude Code 或 Codex 的多个登录可以并排保温，各自有各自的时刻表。[aweswitch](https://github.com/wehuman01/aweswitch) 管理的官方账号（每个都在 `~/.config/aweswitch/accounts/<provider>/<name>/` 下有自己的私有 CLI 配置目录）会在 `awewarm discover`、`awewarm config add` 和 `awewarm init` 里作为独立条目出现——`Codex (cxo-heck)`、`Codex (cxo-peng)`、`Claude Code (work)`——每个存有登录文件的账号目录一条。添加时该目录会作为 `authHome` 写进连接，此后：
 
 - **本地触发**时，CLI 子进程被指向该目录：codex 注入 `CODEX_HOME`；claude 注入 `CLAUDE_CONFIG_DIR` 加 `CLAUDE_CODE_DONT_USE_KEYCHAIN=1`（这个标记让 Claude Code 读目录里的文件登录而非全机共享的钥匙串——与 aweswitch 自己启动时用的环境一致）。每个连接都以自己的账号触发；
 - **委托**时，推送读取的登录来自该目录，后台同步的指纹漂移重推也按连接独立进行——各账号各自轮换。服务器一侧不变：它的按连接沙箱（或原生请求）本来就只认推送来的凭据。
@@ -543,12 +543,12 @@ awewarm 是一个不断壮大的 "awesome" 工具家族中的一员 — 围绕 A
 ### CLI 工具
 
 - **[aweskill](https://aweskill.webioinfo.top/)** — CLI 优先的技能包管理器，支持 47+ AI 编程 agent。
-- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Claude Code、Codex、OpenCode 的 agent 配置切换器。
-- **[awerouter](https://github.com/mugpeng/awerouter)** — 智能路由器，用结构信号把请求分给 Flash 或 Pro 模型，减少不必要的模型开销。
-- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — 收藏、分类、恢复 AI 编程会话，还能搭配 aweswitch 实现保存配置，一键启动。
+- **[aweswitch](https://github.com/wehuman01/aweswitch)** — Claude Code、Codex、OpenCode 的 agent 配置切换器。
+- **[awerouter](https://github.com/wehuman01/awerouter)** — 智能路由器，用结构信号把请求分给 Flash 或 Pro 模型，减少不必要的模型开销。
+- **[aweshelf](https://github.com/wehuman01/aweshelf)** — 收藏、分类、恢复 AI 编程会话，还能搭配 aweswitch 实现保存配置，一键启动。
 - **[aweshare](https://github.com/wehuman01/aweshare)** — 通过自建 Hub 共享本地 Ollama/vLLM，或国产厂商 coding plan，或已授权的 OpenAI/Anthropic 帐号订阅，实现 token 的共享经济。
 - **[awewarm](https://github.com/wehuman01/awewarm)** — 订阅窗口保持器，让 AI 编程套餐的窗口持续激活，无论是本地设置，还是通过远程连接的服务器。
-- **[awescholar](https://github.com/Webioinfo01/awescholar)** — AI agent 可自主执行的科学文献发现与策展，搜索、标注、筛选和报告学术论文。
+- **[awescholar](https://github.com/wehuman01/awescholar)** — AI agent 可自主执行的科学文献发现与策展，搜索、标注、筛选和报告学术论文。
 
 ### 桌面应用
 
