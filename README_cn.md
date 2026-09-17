@@ -145,7 +145,7 @@ awewarm 是一组面向 AI 编程 agent 的工具的一部分：
 
 - **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** — 多租户配套服务器：一台常在线的机器通过一次性邀请，为整个团队保持窗口温热。同属 wehuman01，使用 MPL-2.0；底层引擎固定到本包的小版本。
 - **[aweswitch](https://github.com/wehuman01/aweswitch)** — Claude Code、Codex 和 OpenCode 的 agent profile 切换器。aweswitch 管理会话使用哪个 provider，awewarm 在下面保持该订阅窗口活跃。
-- **[aweskill](https://aweskill.webioinfo.top/)** — 面向 AI agent 的 CLI skill 包管理器（支持 47+ agent）。
+- **[aweskill](https://aweskill.wehuman.top/)** — 面向 AI agent 的 CLI skill 包管理器（支持 47+ agent）。
 - **[aweshelf](https://github.com/wehuman01/aweshelf)** — Claude Code 和 Codex 的会话收藏管理器。
 - **[awerouter](https://github.com/wehuman01/awerouter)** — 智能 LLM 路由器：按结构信号切分 flash/pro。
 
@@ -542,7 +542,7 @@ awewarm 是一个不断壮大的 "awesome" 工具家族中的一员 — 围绕 A
 
 ### CLI 工具
 
-- **[aweskill](https://aweskill.webioinfo.top/)** — CLI 优先的技能包管理器，支持 47+ AI 编程 agent。
+- **[aweskill](https://aweskill.wehuman.top/)** — CLI 优先的技能包管理器，支持 47+ AI 编程 agent。
 - **[aweswitch](https://github.com/wehuman01/aweswitch)** — Claude Code、Codex、OpenCode 的 agent 配置切换器。
 - **[awerouter](https://github.com/wehuman01/awerouter)** — 智能路由器，用结构信号把请求分给 Flash 或 Pro 模型，减少不必要的模型开销。
 - **[aweshelf](https://github.com/wehuman01/aweshelf)** — 收藏、分类、恢复 AI 编程会话，还能搭配 aweswitch 实现保存配置，一键启动。

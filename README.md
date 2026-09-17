@@ -145,7 +145,7 @@ awewarm is part of a small tool family for AI coding agents:
 
 - **[awewarm-hub](https://github.com/wehuman01/awewarm-hub)** — the multi-tenant companion server: one always-on box keeps a whole team's windows warm through one-time invites. Same org, same MPL-2.0; its engine is this package, pinned to its minor version.
 - **[aweswitch](https://github.com/wehuman01/aweswitch)** — agent profile switcher for Claude Code, Codex, and OpenCode. aweswitch manages which provider a session launches with; awewarm keeps that provider's subscription window open underneath.
-- **[aweskill](https://aweskill.webioinfo.top/)** — CLI skill package manager for AI agents (47+ agents).
+- **[aweskill](https://aweskill.wehuman.top/)** — CLI skill package manager for AI agents (47+ agents).
 - **[aweshelf](https://github.com/wehuman01/aweshelf)** — session bookmark manager for Claude Code and Codex.
 - **[awerouter](https://github.com/wehuman01/awerouter)** — smart LLM router: flash/pro split by structural signals.
 
@@ -544,7 +544,7 @@ awewarm is part of a growing family of "awesome" tools — CLI-first, local-firs
 
 ### CLI Tools
 
-- **[aweskill](https://aweskill.webioinfo.top/)** — CLI-first skill package manager supporting 47+ AI coding agents.
+- **[aweskill](https://aweskill.wehuman.top/)** — CLI-first skill package manager supporting 47+ AI coding agents.
 - **[aweswitch](https://github.com/wehuman01/aweswitch)** — Agent profile switcher for Claude Code, Codex, and OpenCode.
 - **[awerouter](https://github.com/wehuman01/awerouter)** — Smart router that splits requests between Flash and Pro models using structural signals, cutting unnecessary model spend.
 - **[aweshelf](https://github.com/wehuman01/aweshelf)** — Bookmark, categorize, and restore AI coding sessions; pairs with aweswitch to save profiles and launch with one command.
