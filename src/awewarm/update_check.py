@@ -5,6 +5,11 @@ interactive commands — never for `awewarm tick`, which the background schedule
 invokes every minute, and never for `awewarm self-update` itself. Network failures
 back off for a few hours so an offline machine does not retry on every command.
 """
+
+# Vendored across the awe series: awerouter, aweswitch, aweshelf, and awewarm each
+# carry a near-identical copy (no shared runtime dependency, by design). Keep
+# behavioral fixes in sync manually across the four copies. Last synced: 2026-09-19.
+
 import json
 import os
 import re
